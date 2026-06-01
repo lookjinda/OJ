@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+body {
+  @apply bg-gray-50 text-gray-900;
+}
+
+/* Scratch编辑器样式 */
+.scratch-editor {
+  @apply w-full h-full border border-gray-300 rounded-lg overflow-hidden;
+}
+
+/* 代码编辑器样式 */
+.code-editor {
+  @apply w-full h-full border border-gray-300 rounded-lg overflow-hidden;
+}

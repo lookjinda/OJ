@@ -1,0 +1,148 @@
+
+const express = require('express');
+const router = express.Router();
+const db = require('../models/db');
+
+
+// ============ 小组 ============
+
+// GET /api/groups — 列表（老师看到自己的，管理员看到全部）
+router.get('/', (req, res) => {
+  const teacherId = req.query.teacher_id;
+  let sql = 'SELECT g.*, u.username as teacher_name FROM groups g JOIN users u ON g.teacher_id = u.id';
+  const params = [];
+  if (teacherId) { sql += ' WHERE g.teacher_id = ?'; params.push(teacherId); }
+  sql += ' ORDER BY g.id DESC';
+  const groups = db.prepare(sql).all(...params);
+  res.json({ groups });
+});
+
+// POST /api/groups — 创建小组
+router.post('/', (req, res) => {
+  const { name, teacher_id } = req.body;
+  if (!name || !teacher_id) return res.status(400).json({ error: '缺少参数' });
+  const result = db.prepare('INSERT INTO groups (name, teacher_id) VALUES (?, ?)').run(name, teacher_id);
+  res.json({ id: result.lastInsertRowid, name, teacher_id });
+});
+
+// PUT /api/groups/:id
+router.put('/:id', (req, res) => {
+  const { name } = req.body;
+  db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(name, req.params.id);
+  res.json({ ok: 1 });
+});
+
+// DELETE /api/groups/:id
+router.delete('/:id', (req, res) => {
+  db.prepare('DELETE FROM groups WHERE id = ?').run(req.params.id);
+  res.json({ ok: 1 });
+});
+
+// ============ 小组学员 ============
+
+// GET /api/groups/:id/members
+router.get('/:id/members', (req, res) => {
+  const members = db.prepare(
+    'SELECT gm.*, u.username, u.id as uid FROM group_members gm JOIN users u ON gm.student_id = u.id WHERE gm.group_id = ?'
+  ).all(req.params.id);
+  res.json({ members });
+});
+
+// POST /api/groups/:id/members — 添加学员
+router.post('/:id/members', (req, res) => {
+  const { username } = req.body;
+  if (!username) return res.status(400).json({ error: '缺少用户名' });
+  const student = db.prepare('SELECT id, role FROM users WHERE username = ?').get(username);
+  if (!student) return res.status(404).json({ error: '用户不存在' });
+  if (student.role !== 'student') return res.status(400).json({ error: '该用户不是学生' });
+  try {
+    db.prepare('INSERT INTO group_members (group_id, student_id) VALUES (?, ?)').run(req.params.id, student.id);
+    res.json({ ok: 1 });
+  } catch(e) {
+    if (e.message.includes('UNIQUE')) return res.status(400).json({ error: '该学员已在小组中' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/groups/:id/members/:studentId
+router.delete('/:id/members/:studentId', (req, res) => {
+  db.prepare('DELETE FROM group_members WHERE group_id = ? AND student_id = ?').run(req.params.id, req.params.studentId);
+  res.json({ ok: 1 });
+});
+
+// ============ 作业 ============
+
+// GET /api/assignments?group_id=
+router.get('/assignments/list', (req, res) => {
+  const { group_id } = req.query;
+  if (!group_id) return res.status(400).json({ error: '缺少 group_id' });
+  const assignments = db.prepare('SELECT * FROM assignments WHERE group_id = ? ORDER BY id DESC').all(group_id);
+  res.json({ assignments });
+});
+
+// POST /api/groups/assignments — 创建作业
+router.post('/assignments', (req, res) => {
+  const { group_id, title, description, due_at } = req.body;
+  if (!group_id || !title) return res.status(400).json({ error: '缺少参数' });
+  const result = db.prepare('INSERT INTO assignments (group_id, title, description, due_at) VALUES (?, ?, ?, ?)').run(group_id, title, description || '', due_at || null);
+  res.json({ id: result.lastInsertRowid });
+});
+
+// PUT /api/groups/assignments/:id
+router.put('/assignments/:id', (req, res) => {
+  const { title, description, due_at } = req.body;
+  db.prepare('UPDATE assignments SET title = COALESCE(?, title), description = COALESCE(?, description), due_at = ? WHERE id = ?').run(title || null, description || null, due_at || null, req.params.id);
+  res.json({ ok: 1 });
+});
+
+// DELETE /api/groups/assignments/:id
+router.delete('/assignments/:id', (req, res) => {
+  db.prepare('DELETE FROM assignments WHERE id = ?').run(req.params.id);
+  res.json({ ok: 1 });
+});
+
+// ============ 作业题目 ============
+
+// GET /api/groups/assignments/:id/questions
+router.get('/assignments/:id/questions', (req, res) => {
+  const questions = db.prepare(
+    'SELECT q.id, q.numId, q.title, q.type, q.language, q.difficulty, aq.sort_order FROM assignment_questions aq JOIN questions q ON aq.question_id = q.id WHERE aq.assignment_id = ? ORDER BY aq.sort_order'
+  ).all(req.params.id);
+  res.json({ questions });
+});
+
+// POST /api/groups/assignments/:id/questions — 添加题目
+router.post('/assignments/:id/questions', (req, res) => {
+  const { question_id, sort_order } = req.body;
+  try {
+    db.prepare('INSERT INTO assignment_questions (assignment_id, question_id, sort_order) VALUES (?, ?, ?)').run(req.params.id, question_id, sort_order || 0);
+    res.json({ ok: 1 });
+  } catch(e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// DELETE /api/groups/assignments/:id/questions/:questionId
+router.delete('/assignments/:id/questions/:questionId', (req, res) => {
+  db.prepare('DELETE FROM assignment_questions WHERE assignment_id = ? AND question_id = ?').run(req.params.id, req.params.questionId);
+  res.json({ ok: 1 });
+});
+
+module.exports = router;
+
+// GET /api/groups/my — 我的小组（学生视角）
+router.get("/my", authMiddleware, (req, res) => {
+  const userId = req.user.id;
+
+// GET /api/groups/my — 我的小组（学生视角）
+router.get('/my', authMiddleware, (req, res) => {
+  const userId = req.user.id;
+  const groups = db.prepare(`SELECT g.* FROM groups g JOIN group_members gm ON g.id = gm.group_id WHERE gm.student_id = ? ORDER BY g.created_at DESC`).all(userId);
+  res.json({ groups });
+});
+
+// GET /api/groups/:id/assignments — 小组作业列表
+router.get('/:id/assignments', authMiddleware, (req, res) => {
+  const assignments = db.prepare(`SELECT a.*, COUNT(aq.question_id) as question_count FROM assignments a LEFT JOIN assignment_questions aq ON a.id = aq.assignment_id WHERE a.group_id = ? GROUP BY a.id ORDER BY a.created_at DESC`).all(req.params.id);
+  res.json({ assignments });
+});

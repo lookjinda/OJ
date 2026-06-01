@@ -1,0 +1,10 @@
+.DS_Store
+node_modules/
+.env
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+db_chunks/
+dist/
+*.tsbuildinfo
