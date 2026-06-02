@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { Clock, FileText, ListChecks, Search, Settings, Trophy, X } from 'lucide-react';
 import { useAuthStore } from '../stores';
 
 export default function Exams() {
@@ -8,15 +9,33 @@ export default function Exams() {
   const [exams, setExams] = useState<any[]>([]);
   const [records, setRecords] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [language, setLanguage] = useState('全部');
+  const [contest, setContest] = useState('全部');
+
+  const languageOptions = ['全部', '图形化', 'Scratch', 'Python', 'C++', '其他'];
+  const contestOptions = ['全部', '电子学会', 'GESP', '数字守艺人', '信息素养大赛', '其他'];
 
   useEffect(() => {
-    fetch('/api/exams')
+    const params = new URLSearchParams();
+    if (search.trim()) params.set('search', search.trim());
+    if (language !== '全部') params.set('language', language);
+    if (contest !== '全部') params.set('contest', contest);
+
+    setLoading(true);
+    fetch(`/api/exams?${params.toString()}`)
       .then(r => r.json())
-      .then(data => { setExams(data); setLoading(false); });
-  }, []);
+      .then(data => { setExams(Array.isArray(data) ? data : []); })
+      .catch(() => setExams([]))
+      .finally(() => setLoading(false));
+  }, [search, language, contest]);
 
   useEffect(() => {
     if (tab === 'records') {
+      if (!user) {
+        setRecords([]);
+        return;
+      }
       const token = localStorage.getItem('token');
       fetch('/api/exams/records', {
         headers: { Authorization: `Bearer ${token}` }
@@ -31,12 +50,23 @@ export default function Exams() {
     return <span className="px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded text-xs">进行中</span>;
   };
 
+  const hasFilters = search.trim() || language !== '全部' || contest !== '全部';
+  const clearFilters = () => {
+    setSearch('');
+    setLanguage('全部');
+    setContest('全部');
+  };
+
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div className="max-w-5xl mx-auto px-4 py-6">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-800">📝 考试中心</h1>
-        {user?.role === 'admin' && (
-          <Link to="/admin?tab=exams" className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">考试中心</h1>
+          <p className="text-sm text-gray-500 mt-1">浏览试卷、进入考试、查看个人考试记录</p>
+        </div>
+        {(user?.role === 'admin' || user?.role === 'teacher') && (
+          <Link to="/admin?tab=exams" className="inline-flex items-center gap-2 px-4 py-2 bg-sky-600 text-white rounded-lg text-sm hover:bg-sky-700">
+            <Settings className="w-4 h-4" />
             管理考试
           </Link>
         )}
@@ -48,7 +78,7 @@ export default function Exams() {
           onClick={() => setTab('list')}
           className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition ${
             tab === 'list'
-              ? 'border-indigo-600 text-indigo-600'
+              ? 'border-sky-600 text-sky-700'
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
         >
@@ -58,7 +88,7 @@ export default function Exams() {
           onClick={() => setTab('records')}
           className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition ${
             tab === 'records'
-              ? 'border-indigo-600 text-indigo-600'
+              ? 'border-sky-600 text-sky-700'
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
         >
@@ -69,31 +99,103 @@ export default function Exams() {
       {/* 考试列表 */}
       {tab === 'list' && (
         <>
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-5">
+            <div className="grid gap-3 lg:grid-cols-[1fr_160px_180px_auto]">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
+                  placeholder="搜索考试卷名称、描述、语言或来源"
+                />
+              </div>
+              <select
+                value={language}
+                onChange={(e) => setLanguage(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
+                aria-label="按编程语言筛选"
+              >
+                {languageOptions.map((item) => (
+                  <option key={item} value={item}>{item === '全部' ? '全部语言' : item}</option>
+                ))}
+              </select>
+              <select
+                value={contest}
+                onChange={(e) => setContest(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
+                aria-label="按真题来源筛选"
+              >
+                {contestOptions.map((item) => (
+                  <option key={item} value={item}>{item === '全部' ? '全部来源' : item}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={clearFilters}
+                disabled={!hasFilters}
+                className="inline-flex items-center justify-center gap-2 px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                title="清空筛选"
+              >
+                <X className="w-4 h-4" />
+                清空
+              </button>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+              {languageOptions.filter(item => item !== '全部').map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setLanguage(item)}
+                  className={`px-2.5 py-1 rounded border ${
+                    language === item ? 'border-sky-300 bg-sky-50 text-sky-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                  }`}
+                >
+                  {item}
+                </button>
+              ))}
+              {contestOptions.filter(item => item !== '全部').map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setContest(item)}
+                  className={`px-2.5 py-1 rounded border ${
+                    contest === item ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                  }`}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {loading ? (
             <div className="p-6 text-gray-500">加载中...</div>
           ) : exams.length === 0 ? (
-            <div className="text-center py-16 text-gray-400">
-              <div className="text-5xl mb-4">📋</div>
-              <p>暂无考试</p>
+            <div className="text-center py-16 text-gray-400 bg-white border rounded-lg">
+              <FileText className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+              <p>{hasFilters ? '没有找到匹配的考试卷' : '暂无考试'}</p>
             </div>
           ) : (
             <div className="grid gap-4">
               {exams.map(exam => (
-                <div key={exam.id} className="border border-gray-200 rounded-xl p-5 bg-white hover:shadow-md transition-shadow">
+                <div key={exam.id} className="border border-gray-200 rounded-lg p-5 bg-white hover:shadow-sm transition-shadow">
                   <div className="flex items-start justify-between">
                     <div>
                       <h3 className="text-lg font-semibold text-gray-800">{exam.title}</h3>
                       {exam.description && <p className="text-gray-500 text-sm mt-1">{exam.description}</p>}
-                      <div className="flex gap-3 mt-2 text-xs text-gray-400">
+                      <div className="flex flex-wrap gap-3 mt-3 text-xs text-gray-500">
                         {exam.difficulty && <span className="px-2 py-0.5 bg-gray-100 rounded">难度: {exam.difficulty}</span>}
-                        <span>⏱ {exam.duration}分钟</span>
-                        <span>📝 {exam.question_count}题</span>
-                        <span>💯 {exam.total_score}分</span>
+                        {exam.language_category && <span className="px-2 py-0.5 bg-sky-50 text-sky-700 rounded">{exam.language_category}</span>}
+                        {exam.contest_category && <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded">{exam.contest_category}</span>}
+                        <span className="inline-flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{exam.duration}分钟</span>
+                        <span className="inline-flex items-center gap-1"><ListChecks className="w-3.5 h-3.5" />{exam.question_count}题</span>
+                        <span className="inline-flex items-center gap-1"><Trophy className="w-3.5 h-3.5" />{exam.total_score}分</span>
                       </div>
                     </div>
                     <Link
                       to={`/exams/${exam.id}`}
-                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 whitespace-nowrap"
+                      className="px-4 py-2 bg-sky-600 text-white rounded-lg text-sm hover:bg-sky-700 whitespace-nowrap"
                     >
                       进入考试
                     </Link>
@@ -108,9 +210,16 @@ export default function Exams() {
       {/* 我的记录 */}
       {tab === 'records' && (
         <>
-          {records.length === 0 ? (
-            <div className="text-center py-16 text-gray-400">
-              <div className="text-5xl mb-4">📭</div>
+          {!user ? (
+            <div className="text-center py-16 text-gray-500 bg-white border rounded-lg">
+              <p>登录后可以查看你的考试记录</p>
+              <Link to="/login" className="mt-4 inline-flex px-4 py-2 rounded-lg bg-sky-600 text-white text-sm hover:bg-sky-700">
+                去登录
+              </Link>
+            </div>
+          ) : records.length === 0 ? (
+            <div className="text-center py-16 text-gray-400 bg-white border rounded-lg">
+              <FileText className="w-12 h-12 mx-auto mb-4 text-gray-300" />
               <p>暂无考试记录</p>
               <p className="text-sm mt-1">去参加一场考试吧</p>
             </div>
@@ -133,7 +242,7 @@ export default function Exams() {
                       <td className="px-5 py-3.5 font-medium text-gray-800">{rec.title}</td>
                       <td className="px-4 py-3.5 text-center">
                         {rec.score !== null && rec.score !== undefined
-                          ? <span className="font-semibold text-indigo-600">{rec.score} / {rec.total_score}</span>
+                          ? <span className="font-semibold text-sky-700">{rec.score} / {rec.total_score}</span>
                           : <span className="text-gray-400">—</span>
                         }
                       </td>
@@ -148,7 +257,7 @@ export default function Exams() {
                       <td className="px-4 py-3.5 text-center">
                         <Link
                           to={`/exams/${rec.exam_id}?recordId=${rec.id}`}
-                          className="text-indigo-600 hover:text-indigo-800 text-xs"
+                          className="text-sky-700 hover:text-sky-900 text-xs"
                         >
                           查看详情
                         </Link>

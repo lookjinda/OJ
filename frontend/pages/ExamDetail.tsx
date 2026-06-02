@@ -327,7 +327,7 @@ export default function ExamDetail() {
               {q.type === 'programming' && (
                 <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-500 mb-4">
                   <p>📌 编程题需要去题目详情页作答完成后，再回到本考试提交。</p>
-                  <Link to={`/questions/${q.id}`} className="text-indigo-600 hover:underline mt-1 inline-block">
+                  <Link to={`/question/${q.id}`} className="text-indigo-600 hover:underline mt-1 inline-block">
                     前往作答 →
                   </Link>
                 </div>

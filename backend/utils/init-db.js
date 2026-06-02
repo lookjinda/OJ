@@ -4,17 +4,60 @@ const bcrypt = require('bcryptjs');
 function initDatabase() {
   console.log('初始化数据库...');
 
+  const ensureColumn = (table, column, definition) => {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.some((c) => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  };
+
+  const migrateExamRecordsUniqueness = () => {
+    const indexes = db.prepare('PRAGMA index_list(exam_records)').all();
+    const hasUniqueUserExamIndex = indexes.some((idx) => idx.unique);
+    if (!hasUniqueUserExamIndex) return;
+
+    db.exec(`
+      PRAGMA foreign_keys=OFF;
+      BEGIN;
+      CREATE TABLE exam_records_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        exam_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        answers TEXT DEFAULT '{}',
+        score INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'in_progress',
+        started_at DATETIME,
+        submitted_at DATETIME,
+        FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      INSERT OR IGNORE INTO exam_records_new (id, exam_id, user_id, answers, score, status, started_at, submitted_at)
+        SELECT id, exam_id, user_id, answers, score, status, started_at, submitted_at FROM exam_records;
+      DROP TABLE exam_records;
+      ALTER TABLE exam_records_new RENAME TO exam_records;
+      COMMIT;
+      PRAGMA foreign_keys=ON;
+    `);
+  };
+
   // 创建用户表
   db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
+    email TEXT UNIQUE,
+    phone TEXT UNIQUE,
     role TEXT DEFAULT 'student',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_login DATETIME
   );
   `);
+
+  ensureColumn('users', 'email', 'TEXT');
+  ensureColumn('users', 'phone', 'TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL AND email != ""');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone ON users(phone) WHERE phone IS NOT NULL AND phone != ""');
 
   // 创建题目表
   db.exec(`
@@ -31,12 +74,27 @@ function initDatabase() {
     scratch_template TEXT,
     points INTEGER DEFAULT 10,
     tags TEXT,
+    samples TEXT,
+    desc_images TEXT,
+    subtype TEXT,
+    source TEXT DEFAULT '',
+    time_limit_ms INTEGER DEFAULT 1000,
+    memory_limit_mb INTEGER DEFAULT 128,
+    is_public INTEGER DEFAULT 1,
     created_by INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(id)
   );
   `);
+
+  ensureColumn('questions', 'source', "TEXT DEFAULT ''");
+  ensureColumn('questions', 'samples', 'TEXT');
+  ensureColumn('questions', 'desc_images', 'TEXT');
+  ensureColumn('questions', 'subtype', 'TEXT');
+  ensureColumn('questions', 'time_limit_ms', 'INTEGER DEFAULT 1000');
+  ensureColumn('questions', 'memory_limit_mb', 'INTEGER DEFAULT 128');
+  ensureColumn('questions', 'is_public', 'INTEGER DEFAULT 1');
 
   // 创建提交记录表
   db.exec(`
@@ -49,15 +107,73 @@ function initDatabase() {
     scratch_project TEXT,
     answer TEXT,
     result TEXT NOT NULL CHECK(result IN ('pending', 'pass', 'fail', 'partial', 'error')),
+    status TEXT DEFAULT 'pending',
     score INTEGER DEFAULT 0,
     feedback TEXT,
+    compile_output TEXT,
+    runtime_output TEXT,
+    case_results TEXT,
     execution_time INTEGER,
     memory_usage INTEGER,
     submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    judged_at DATETIME,
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (question_id) REFERENCES questions(id)
   );
   `);
+
+  ensureColumn('submissions', 'status', "TEXT DEFAULT 'pending'");
+  ensureColumn('submissions', 'compile_output', 'TEXT');
+  ensureColumn('submissions', 'runtime_output', 'TEXT');
+  ensureColumn('submissions', 'case_results', 'TEXT');
+  ensureColumn('submissions', 'judged_at', 'DATETIME');
+
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS test_data_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    file_type TEXT NOT NULL CHECK(file_type IN ('input', 'output')),
+    content TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
+  );
+  `);
+
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS announcements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    content TEXT DEFAULT '',
+    priority INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_by INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id)
+  );
+  `);
+
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS site_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  `);
+
+  const defaultSettings = {
+    site_name: 'bi lin',
+    site_subtitle: '在线评测与编程训练平台',
+    primary_color: '#0284c7',
+    show_ai_assistant: '1',
+    home_notice_title: '公告',
+    home_stats_title: '站点统计',
+    home_tags_title: '标签',
+  };
+  const insertSetting = db.prepare('INSERT OR IGNORE INTO site_settings (key, value) VALUES (?, ?)');
+  Object.entries(defaultSettings).forEach(([key, value]) => insertSetting.run(key, value));
 
   // 创建排行榜视图
   db.exec(`
@@ -82,9 +198,86 @@ function initDatabase() {
     description TEXT,
     cover_image TEXT,
     is_public INTEGER DEFAULT 1,
+    group_id INTEGER,
+    sort_order INTEGER DEFAULT 0,
     created_by INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    FOREIGN KEY (group_id) REFERENCES groups(id)
+  );
+  `);
+
+  ensureColumn('problem_lists', 'group_id', 'INTEGER');
+  ensureColumn('problem_lists', 'sort_order', 'INTEGER DEFAULT 0');
+
+  // 小组表
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    teacher_id INTEGER NOT NULL,
+    invite_code TEXT UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (teacher_id) REFERENCES users(id)
+  );
+  `);
+
+  // 小组成员表
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS group_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
+    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at DATETIME,
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (member_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(group_id, member_id)
+  );
+  `);
+
+  // 兼容旧库字段名
+  ensureColumn('groups', 'description', "TEXT DEFAULT ''");
+  ensureColumn('groups', 'invite_code', 'TEXT');
+  ensureColumn('groups', 'updated_at', 'DATETIME');
+  ensureColumn('group_members', 'member_id', 'INTEGER');
+  ensureColumn('group_members', 'status', "TEXT DEFAULT 'pending'");
+  ensureColumn('group_members', 'joined_at', 'DATETIME');
+  ensureColumn('group_members', 'reviewed_at', 'DATETIME');
+  const memberColumns = db.prepare('PRAGMA table_info(group_members)').all().map((c) => c.name);
+  if (memberColumns.includes('student_id')) {
+    db.exec('UPDATE group_members SET member_id = student_id WHERE member_id IS NULL');
+  }
+
+  // 小组作业表
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS assignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    due_at DATETIME,
+    created_by INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
     FOREIGN KEY (created_by) REFERENCES users(id)
+  );
+  `);
+  ensureColumn('assignments', 'created_by', 'INTEGER');
+
+  // 小组作业题目关联表
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS assignment_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignment_id INTEGER NOT NULL,
+    question_id INTEGER NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    FOREIGN KEY (assignment_id) REFERENCES assignments(id) ON DELETE CASCADE,
+    FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE,
+    UNIQUE(assignment_id, question_id)
   );
   `);
 
@@ -182,10 +375,10 @@ function initDatabase() {
     started_at DATETIME,
     submitted_at DATETIME,
     FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    UNIQUE(exam_id, user_id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
   `);
+  migrateExamRecordsUniqueness();
 
   // 插入默认管理员
   const adminPassword = bcrypt.hashSync('admin123', 10);
@@ -289,6 +482,15 @@ function initDatabase() {
     );
 
     console.log('默认管理员账号: admin / admin123');
+  }
+
+  const announcementCount = db.prepare('SELECT COUNT(*) as count FROM announcements').get();
+  if (announcementCount.count === 0) {
+    const admin = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
+    db.prepare(`
+      INSERT INTO announcements (title, content, priority, is_active, created_by)
+      VALUES (?, ?, ?, 1, ?)
+    `).run('欢迎来到 bi lin OJ', '题库、比赛、题单和小组已开放浏览，登录后即可提交代码。', 10, admin?.id || null);
   }
 }
 

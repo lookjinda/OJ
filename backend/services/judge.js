@@ -1,325 +1,282 @@
 const { spawn } = require('child_process');
-const path = require('path');
 const fs = require('fs').promises;
-
-
+const os = require('os');
+const path = require('path');
 const db = require('../models/db');
 
-// 从 test_data_files 表加载测试数据（优先于 test_cases JSON 字段）
+const RESULT_MAP = {
+  accepted: 'pass',
+  wrong_answer: 'fail',
+  time_limit_exceeded: 'fail',
+  runtime_error: 'error',
+  compile_error: 'error',
+  system_error: 'error',
+  partial: 'partial',
+};
+
+let workerStarted = false;
+let workerBusy = false;
+
+function normalizeTestCases(question) {
+  const fileCases = loadTestData(question.id);
+  if (fileCases && fileCases.length) return fileCases;
+  if (!question.test_cases) return [];
+  if (Array.isArray(question.test_cases)) return question.test_cases;
+  try {
+    const parsed = JSON.parse(question.test_cases);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function loadTestData(questionId) {
   try {
     const files = db.prepare('SELECT * FROM test_data_files WHERE question_id = ? ORDER BY sort_order, id').all(questionId);
-    if (!files || files.length === 0) return null;
-    const inputs = files.filter(f => f.file_type === 'input');
-    const outputs = files.filter(f => f.file_type === 'output');
-    const cases = [];
-    for (const inp of inputs) {
-      const baseName = inp.filename.replace(/\.in$/i, '');
-      const out = outputs.find(o => o.filename.replace(/\.out$/i, '') === baseName) || outputs[inputs.indexOf(inp)];
-      if (out) cases.push({ input: inp.content, expected: out.content });
-    }
-    return cases.length > 0 ? cases : null;
-  } catch (e) { return null; }
+    if (!files.length) return null;
+    const inputs = files.filter((file) => file.file_type === 'input');
+    const outputs = files.filter((file) => file.file_type === 'output');
+    return inputs.map((input, index) => {
+      const base = input.filename.replace(/\.in$/i, '');
+      const output = outputs.find((item) => item.filename.replace(/\.out$/i, '') === base) || outputs[index];
+      return output ? { input: input.content, expected: output.content } : null;
+    }).filter(Boolean);
+  } catch {
+    return null;
+  }
 }
 
-// 判题服务
-async function judgeSubmission(question, submission) {
-  const { type, language, test_cases, answer: correctAnswer, points, id: qid } = question;
-  const { code, scratch_project } = submission;
-
-  // 优先从 test_data_files 表加载测试数据
-  let effectiveTestCases = loadTestData(qid) || test_cases;
-
-  if (language === 'scratch' || scratch_project) {
-    return judgeScratch(scratch_project, effectiveTestCases, points);
-  }
-
-  if (language === 'python') {
-    return judgePython(code, effectiveTestCases, points);
-  }
-
-  if (language === 'cpp') {
-    return judgeCpp(code, effectiveTestCases, points);
-  }
-
-  return { result: 'error', score: 0, feedback: '不支持的编程语言' };
+function stringifyInput(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
 }
 
-// 通用比较：统一为字符串比较，避免 JSON.stringify 差异
-// 例如期望 "7"，输出 7，都转为字符串 "7" 再比较
-function compare(actual, expected) {
-  if (actual === expected) return true;
-  // 转为字符串后比较（处理数字vs字符串、尾部空格等差异）
-  const a = typeof actual === 'string' ? actual.trim() : String(actual);
-  const e = typeof expected === 'string' ? expected.toString().trim() : String(expected);
+function expectedValue(testCase) {
+  return testCase.expected !== undefined ? testCase.expected : testCase.output;
+}
+
+function compareOutput(actual, expected) {
+  const a = String(actual ?? '').replace(/\r\n/g, '\n').trim();
+  const e = String(expected ?? '').replace(/\r\n/g, '\n').trim();
   return a === e;
 }
 
-// Python判题
-async function judgePython(code, testCases, points) {
-  try {
-    const results = [];
-    const tempDir = '/tmp/judge';
-
-    await fs.mkdir(tempDir, { recursive: true });
-
-    const codeFile = path.join(tempDir, `solution_${Date.now()}.py`);
-    await fs.writeFile(codeFile, code);
-
-    let passCount = 0;
-
-    for (const testCase of testCases) {
-      try {
-        const rawOutput = await runPythonCode(codeFile, testCase.input);
-        const expectedVal = testCase.expected !== undefined ? testCase.expected : testCase.output;
-        const passed = compare(rawOutput, expectedVal);
-
-        if (passed) {
-          passCount++;
-          results.push({ pass: true, input: testCase.input, expected: String(expectedVal), actual: String(rawOutput) });
-        } else {
-          results.push({ pass: false, input: testCase.input, expected: String(expectedVal), actual: String(rawOutput) });
-        }
-      } catch (err) {
-        results.push({ pass: false, input: testCase.input, error: err.message });
-      }
-    }
-
-    const score = Math.round((passCount / testCases.length) * points);
-    const result = passCount === testCases.length ? 'pass' : passCount > 0 ? 'partial' : 'fail';
-
-    let feedback = `通过 ${passCount}/${testCases.length} 个测试用例\n`;
-    feedback += results.map((r, i) =>
-      `用例${i+1}: ${r.pass ? '✓' : '✗'} ${r.error ? `错误: ${r.error}` : `期望=${r.expected} 实际=${r.actual}`}`
-    ).join('\n');
-
-    await fs.unlink(codeFile).catch(() => {});
-
-    return { result, score, feedback };
-  } catch (err) {
-    return { result: 'error', score: 0, feedback: `执行错误: ${err.message}` };
-  }
-}
-
-// 运行Python代码
-function runPythonCode(codeFile, input) {
-  return new Promise((resolve, reject) => {
-    const python = spawn('python3', [codeFile], { timeout: 5000 });
-    let stdout = '';
-    let stderr = '';
-
-    if (typeof input === 'object') {
-      python.stdin.write(JSON.stringify(input));
-    } else if (typeof input === 'string') {
-      python.stdin.write(input);
-    }
-
-    python.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    python.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    python.on('close', (code) => {
-      if (code === 0) {
-        try {
-          resolve(JSON.parse(stdout.trim()));
-        } catch {
-          resolve(stdout.trim());
-        }
-      } else {
-        reject(new Error(stderr || '执行失败'));
-      }
-    });
-
-    python.on('error', (err) => {
-      reject(err);
-    });
-
-    python.stdin.end();
-  });
-}
-
-// C++判题
-async function judgeCpp(code, testCases, points) {
-  try {
-    const tempDir = '/tmp/judge';
-    await fs.mkdir(tempDir, { recursive: true });
-
-    const baseName = `solution_${Date.now()}`;
-    const sourceFile = path.join(tempDir, `${baseName}.cpp`);
-    const execFile = path.join(tempDir, baseName);
-
-    await fs.writeFile(sourceFile, code);
-
-    const compileResult = await compileCpp(sourceFile, execFile);
-    if (!compileResult.success) {
-      return { result: 'error', score: 0, feedback: `编译错误:\n${compileResult.error}` };
-    }
-
-    let passCount = 0;
-    const results = [];
-
-    for (const testCase of testCases) {
-      try {
-        const rawOutput = await runExecutable(execFile, testCase.input);
-        const expectedVal = testCase.expected !== undefined ? testCase.expected : testCase.output;
-        const passed = compare(rawOutput, expectedVal);
-
-        if (passed) {
-          passCount++;
-          results.push({ pass: true, input: testCase.input, expected: String(expectedVal), actual: String(rawOutput) });
-        } else {
-          results.push({ pass: false, input: testCase.input, expected: String(expectedVal), actual: String(rawOutput) });
-        }
-      } catch (err) {
-        results.push({ pass: false, input: testCase.input, error: err.message });
-      }
-    }
-
-    const score = Math.round((passCount / testCases.length) * points);
-    const result = passCount === testCases.length ? 'pass' : passCount > 0 ? 'partial' : 'fail';
-
-    let feedback = `通过 ${passCount}/${testCases.length} 个测试用例\n`;
-    feedback += results.map((r, i) =>
-      `用例${i+1}: ${r.pass ? '✓' : '✗'} ${r.error ? `错误: ${r.error}` : `期望=${r.expected} 实际=${r.actual}`}`
-    ).join('\n');
-
-    await Promise.all([
-      fs.unlink(sourceFile).catch(() => {}),
-      fs.unlink(execFile).catch(() => {})
-    ]);
-
-    return { result, score, feedback };
-  } catch (err) {
-    return { result: 'error', score: 0, feedback: `执行错误: ${err.message}` };
-  }
-}
-
-// 编译C++
-function compileCpp(sourceFile, execFile) {
+function runCommand(command, args, options = {}) {
   return new Promise((resolve) => {
-    const gpp = spawn('g++', ['-o', execFile, sourceFile, '-std=c++17', '-O2'], { timeout: 10000 });
-    let stderr = '';
-
-    gpp.stderr.on('data', (data) => {
-      stderr += data.toString();
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      timeout: options.timeoutMs || 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
-
-    gpp.on('close', (code) => {
-      if (code === 0) {
-        resolve({ success: true });
-      } else {
-        resolve({ success: false, error: stderr });
-      }
-    });
-
-    gpp.on('error', (err) => {
-      resolve({ success: false, error: err.message });
-    });
-  });
-}
-
-// 运行可执行文件
-function runExecutable(execFile, input) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(execFile, [], { timeout: 5000 });
     let stdout = '';
     let stderr = '';
+    let killedByOutput = false;
+    const limit = options.outputLimit || 1024 * 256;
 
-    if (typeof input === 'object') {
-      proc.stdin.write(JSON.stringify(input));
-    } else if (typeof input === 'string') {
-      proc.stdin.write(input);
-    }
-
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on('close', (code) => {
-      if (code === 0) {
-        try {
-          resolve(JSON.parse(stdout.trim()));
-        } catch {
-          resolve(stdout.trim());
-        }
-      } else {
-        reject(new Error(stderr || '执行失败'));
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > limit) {
+        killedByOutput = true;
+        child.kill('SIGKILL');
       }
     });
-
-    proc.on('error', reject);
-    proc.stdin.end();
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > limit) {
+        killedByOutput = true;
+        child.kill('SIGKILL');
+      }
+    });
+    child.on('error', (err) => resolve({ code: -1, stdout, stderr: err.message, error: err }));
+    child.on('close', (code, signal) => {
+      resolve({ code, signal, stdout, stderr, timedOut: signal === 'SIGTERM' || signal === 'SIGKILL', killedByOutput });
+    });
+    if (options.input) child.stdin.write(options.input);
+    child.stdin.end();
   });
 }
 
-// Scratch判题
-function judgeScratch(scratchProject, testCases, points) {
+async function dockerAvailable() {
+  const result = await runCommand('docker', ['--version'], { timeoutMs: 3000 });
+  return result.code === 0;
+}
+
+function dockerArgs(image, workDir, command, limits) {
+  return [
+    'run', '--rm',
+    '--network', 'none',
+    '--cpus', '1',
+    '--memory', `${limits.memoryLimitMb || 128}m`,
+    '--pids-limit', '128',
+    '-v', `${workDir}:/work:rw`,
+    '-w', '/work',
+    image,
+    'sh', '-lc', command,
+  ];
+}
+
+async function runInDocker(image, workDir, command, input, limits) {
+  return runCommand('docker', dockerArgs(image, workDir, command, limits), {
+    input,
+    timeoutMs: (limits.timeLimitMs || 1000) + 2500,
+    outputLimit: 1024 * 128,
+  });
+}
+
+async function judgePython(question, code, testCases, workDir) {
+  await fs.writeFile(path.join(workDir, 'main.py'), code || '');
+  return runCases('python:3.12-alpine', workDir, 'python /work/main.py', question, testCases);
+}
+
+async function judgeCpp(question, code, testCases, workDir) {
+  await fs.writeFile(path.join(workDir, 'main.cpp'), code || '');
+  const compile = await runInDocker(
+    'gcc:13',
+    workDir,
+    'g++ main.cpp -std=c++17 -O2 -pipe -static -s -o main',
+    '',
+    { timeLimitMs: 10000, memoryLimitMb: Math.max(question.memory_limit_mb || 128, 256) }
+  );
+  if (compile.code !== 0) {
+    return {
+      status: 'compile_error',
+      score: 0,
+      feedback: compile.stderr || compile.stdout || '编译失败',
+      compile_output: compile.stderr || compile.stdout,
+      runtime_output: '',
+      case_results: [],
+    };
+  }
+  return runCases('gcc:13', workDir, './main', question, testCases, compile.stderr || compile.stdout);
+}
+
+async function runCases(image, workDir, command, question, testCases, compileOutput = '') {
+  const caseResults = [];
+  let passCount = 0;
+  for (let index = 0; index < testCases.length; index += 1) {
+    const testCase = testCases[index];
+    const input = stringifyInput(testCase.input);
+    const expected = expectedValue(testCase);
+    const result = await runInDocker(image, workDir, command, input, {
+      timeLimitMs: question.time_limit_ms || 1000,
+      memoryLimitMb: question.memory_limit_mb || 128,
+    });
+
+    let status = 'accepted';
+    if (result.timedOut) status = 'time_limit_exceeded';
+    else if (result.code !== 0) status = 'runtime_error';
+    else if (!compareOutput(result.stdout, expected)) status = 'wrong_answer';
+
+    if (status === 'accepted') passCount += 1;
+    caseResults.push({
+      index: index + 1,
+      status,
+      input,
+      expected: String(expected ?? ''),
+      actual: String(result.stdout ?? '').trim(),
+      error: result.stderr || (result.killedByOutput ? '输出超过限制' : ''),
+    });
+  }
+
+  const status = passCount === testCases.length ? 'accepted' : passCount > 0 ? 'partial' : caseResults[0]?.status || 'wrong_answer';
+  const score = testCases.length ? Math.round((passCount / testCases.length) * (question.points || 0)) : 0;
+  const feedback = `通过 ${passCount}/${testCases.length} 个测试点`;
+  return {
+    status,
+    score,
+    feedback,
+    compile_output: compileOutput,
+    runtime_output: caseResults.map((item) => item.actual).join('\n---\n'),
+    case_results: caseResults,
+  };
+}
+
+async function judgeSubmissionRecord(submissionId) {
+  const submission = db.prepare(`
+    SELECT s.*, q.title, q.type, q.language as question_language, q.test_cases, q.points,
+      q.time_limit_ms, q.memory_limit_mb
+    FROM submissions s
+    JOIN questions q ON s.question_id = q.id
+    WHERE s.id = ?
+  `).get(submissionId);
+  if (!submission) return;
+
+  db.prepare("UPDATE submissions SET status = 'judging', result = 'pending' WHERE id = ?").run(submissionId);
+
   try {
-    if (scratchProject && scratchProject._base64) {
-      return {
-        result: 'partial',
-        score: Math.round(points * 0.6),
-        feedback: `Scratch项目文件(${scratchProject._filename || 'project.sb3'})已收到。\n由于.sb3文件需要人工审核，暂给${Math.round(points * 0.6)}/${points}分。\n老师将检查你的项目是否包含要求的积木和逻辑。`
-      };
+    const question = {
+      id: submission.question_id,
+      type: submission.type,
+      language: submission.question_language,
+      test_cases: submission.test_cases,
+      points: submission.points,
+      time_limit_ms: submission.time_limit_ms,
+      memory_limit_mb: submission.memory_limit_mb,
+    };
+    const testCases = normalizeTestCases(question);
+    if (!testCases.length) throw new Error('题目没有可用测试数据');
+    if (!(await dockerAvailable())) throw new Error('Docker 不可用，请确认已安装并启动 Docker');
+
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), `bilin-judge-${submissionId}-`));
+    let judgeResult;
+    try {
+      const language = submission.language || question.language;
+      if (language === 'python') judgeResult = await judgePython(question, submission.code, testCases, workDir);
+      else if (language === 'cpp') judgeResult = await judgeCpp(question, submission.code, testCases, workDir);
+      else throw new Error(`不支持的编程语言: ${language || 'unknown'}`);
+    } finally {
+      await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
     }
 
-    const project = typeof scratchProject === 'string' ? JSON.parse(scratchProject) : scratchProject;
-
-    let passCount = 0;
-    const checks = [];
-
-    for (const testCase of testCases) {
-      const { check, required, value } = testCase;
-      let passed = false;
-
-      if (project.targets) {
-        for (const target of project.targets) {
-          if (target.blocks) {
-            for (const blockId in target.blocks) {
-              const block = target.blocks[blockId];
-
-              if (check === 'has_pen_block' && block.opcode.includes('pen')) {
-                passed = true;
-              }
-              if (check === 'has_move_block' && block.opcode === 'motion_movesteps') {
-                if (!value || block.inputs.STEPS?.[1]?.[1] == value) {
-                  passed = true;
-                }
-              }
-              if (check === 'has_turn_block' && block.opcode.includes('turn')) {
-                if (!value || block.inputs.DEGREES?.[1]?.[1] == value) {
-                  passed = true;
-                }
-              }
-            }
-          }
-        }
-      }
-
-      checks.push({ check, passed });
-      if (passed || !required) passCount++;
-    }
-
-    const score = Math.round((passCount / testCases.length) * points);
-    const result = passCount === testCases.length ? 'pass' : 'partial';
-
-    let feedback = `通过 ${passCount}/${testCases.length} 个检查项\n`;
-    feedback += checks.map((c, i) =>
-      `${c.check}: ${c.passed ? '✓' : '✗'}`
-    ).join('\n');
-
-    return { result, score, feedback };
+    db.prepare(`
+      UPDATE submissions
+      SET status = ?, result = ?, score = ?, feedback = ?, compile_output = ?,
+          runtime_output = ?, case_results = ?, judged_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      judgeResult.status,
+      RESULT_MAP[judgeResult.status] || 'error',
+      judgeResult.score,
+      judgeResult.feedback,
+      judgeResult.compile_output || '',
+      judgeResult.runtime_output || '',
+      JSON.stringify(judgeResult.case_results || []),
+      submissionId
+    );
   } catch (err) {
-    return { result: 'error', score: 0, feedback: `Scratch项目解析错误: ${err.message}` };
+    db.prepare(`
+      UPDATE submissions
+      SET status = 'system_error', result = 'error', score = 0, feedback = ?,
+          compile_output = '', runtime_output = '', case_results = '[]', judged_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(err.message || '系统错误', submissionId);
   }
 }
 
-module.exports = { judgeSubmission };
+async function processNextSubmission() {
+  if (workerBusy) return;
+  const next = db.prepare(`
+    SELECT id FROM submissions
+    WHERE status = 'pending' AND (language = 'python' OR language = 'cpp')
+    ORDER BY submitted_at ASC
+    LIMIT 1
+  `).get();
+  if (!next) return;
+  workerBusy = true;
+  try {
+    await judgeSubmissionRecord(next.id);
+  } finally {
+    workerBusy = false;
+  }
+}
+
+function startJudgeWorker() {
+  if (workerStarted) return;
+  workerStarted = true;
+  setInterval(() => {
+    processNextSubmission().catch((err) => console.error('判题队列错误:', err));
+  }, 1500);
+}
+
+module.exports = { startJudgeWorker, judgeSubmissionRecord };

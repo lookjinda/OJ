@@ -3,10 +3,15 @@ const router = express.Router();
 const db = require('../models/db');
 const { authMiddleware, adminMiddleware, verifyToken } = require('../middleware/auth');
 
+const jsonField = (value) => {
+  if (!value) return null;
+  return typeof value === 'string' ? value : JSON.stringify(value);
+};
+
 // 获取题目列表（公开，登录用户可看每题状态）
 router.get('/', (req, res) => {
   try {
-    const { type, language, difficulty, search, qid, page = 1, limit = 50 } = req.query;
+    const { type, language, difficulty, search, qid, tag, source, page = 1, limit = 50 } = req.query;
     const offset = (page - 1) * limit;
     
     // 尝试解析用户token（可选登录）
@@ -17,44 +22,63 @@ router.get('/', (req, res) => {
       if (decoded) userId = decoded.id;
     }
     
-    let sql = 'SELECT id, title, type, language, difficulty, points, tags FROM questions WHERE 1=1';
+    let sql = `
+      SELECT q.id, q.title, q.type, q.language, q.difficulty, q.points, q.tags, q.source,
+        q.time_limit_ms, q.memory_limit_mb,
+        COUNT(s.id) as submission_count,
+        COUNT(DISTINCT CASE WHEN s.status = 'accepted' OR s.result = 'pass' THEN s.user_id END) as accepted_count,
+        SUM(CASE WHEN s.status = 'accepted' OR s.result = 'pass' THEN 1 ELSE 0 END) as accepted_submissions
+      FROM questions q
+      LEFT JOIN submissions s ON s.question_id = q.id
+      WHERE q.is_public = 1
+    `;
     const params = [];
     
     if (type) {
-      sql += ' AND type = ?';
+      sql += ' AND q.type = ?';
       params.push(type);
     }
     if (language) {
-      sql += ' AND language = ?';
+      sql += ' AND q.language = ?';
       params.push(language);
     }
     if (difficulty) {
-      sql += ' AND difficulty = ?';
+      sql += ' AND q.difficulty = ?';
       params.push(difficulty);
     }
     if (search) {
-      sql += ' AND title LIKE ?';
+      sql += ' AND q.title LIKE ?';
       params.push(`%${search}%`);
     }
     if (qid) {
-      sql = sql.replace(' WHERE 1=1', ' WHERE 1=1 AND id = ?');
-      params.unshift(Number(qid));
+      sql += ' AND q.id = ?';
+      params.push(Number(qid));
+    }
+    if (tag) {
+      sql += ' AND q.tags LIKE ?';
+      params.push(`%${tag}%`);
+    }
+    if (source) {
+      sql += ' AND q.source LIKE ?';
+      params.push(`%${source}%`);
     }
     
-    sql += ' ORDER BY id ASC LIMIT ? OFFSET ?';
+    sql += ' GROUP BY q.id ORDER BY q.id ASC LIMIT ? OFFSET ?';
     params.push(Number(limit), Number(offset));
     
     const stmt = db.prepare(sql);
     const questions = stmt.all(...params);
     
     // 获取总数
-    let countSql = 'SELECT COUNT(*) as total FROM questions WHERE 1=1';
+    let countSql = 'SELECT COUNT(*) as total FROM questions q WHERE q.is_public = 1';
     const countParams = [];
-    if (type) { countSql += ' AND type = ?'; countParams.push(type); }
-    if (language) { countSql += ' AND language = ?'; countParams.push(language); }
-    if (difficulty) { countSql += ' AND difficulty = ?'; countParams.push(difficulty); }
-    if (search) { countSql += ' AND title LIKE ?'; countParams.push(`%${search}%`); }
-    if (qid) { countSql = countSql.replace(' WHERE 1=1', ' WHERE 1=1 AND id = ?'); countParams.unshift(Number(qid)); }
+    if (type) { countSql += ' AND q.type = ?'; countParams.push(type); }
+    if (language) { countSql += ' AND q.language = ?'; countParams.push(language); }
+    if (difficulty) { countSql += ' AND q.difficulty = ?'; countParams.push(difficulty); }
+    if (search) { countSql += ' AND q.title LIKE ?'; countParams.push(`%${search}%`); }
+    if (qid) { countSql += ' AND q.id = ?'; countParams.push(Number(qid)); }
+    if (tag) { countSql += ' AND q.tags LIKE ?'; countParams.push(`%${tag}%`); }
+    if (source) { countSql += ' AND q.source LIKE ?'; countParams.push(`%${source}%`); }
     const total = db.prepare(countSql).get(...countParams).total;
     
     // 如果用户已登录，获取每题的提交状态
@@ -63,8 +87,7 @@ router.get('/', (req, res) => {
       const statuses = db.prepare(`
         SELECT question_id,
           CASE
-            WHEN SUM(CASE WHEN result = 'pass' THEN 1 ELSE 0 END) > 0 THEN 'pass'
-            WHEN SUM(CASE WHEN result = 'accepted' THEN 1 ELSE 0 END) > 0 THEN 'pass'
+            WHEN SUM(CASE WHEN result = 'pass' OR status = 'accepted' THEN 1 ELSE 0 END) > 0 THEN 'pass'
             WHEN COUNT(*) > 0 THEN 'fail'
             ELSE 'none'
           END as status
@@ -78,7 +101,8 @@ router.get('/', (req, res) => {
     // 给每题附加 status
     const questionsWithStatus = questions.map(q => ({
       ...q,
-      status: questionStatuses[q.id] || 'none'
+      status: questionStatuses[q.id] || 'none',
+      ac_rate: q.submission_count > 0 ? Math.round((q.accepted_submissions / q.submission_count) * 100) : 0,
     }));
     
     res.json({ questions: questionsWithStatus, total, page: Number(page), limit: Number(limit) });
@@ -94,7 +118,9 @@ router.get('/:id', (req, res) => {
     const userId = req.user?.id || 0;
     const stmt = db.prepare(`
       SELECT q.*, 
-        (SELECT COUNT(*) FROM submissions WHERE question_id = q.id AND user_id = ? AND result = 'pass') as solved
+        (SELECT COUNT(*) FROM submissions WHERE question_id = q.id AND user_id = ? AND (result = 'pass' OR status = 'accepted')) as solved,
+        (SELECT COUNT(*) FROM submissions WHERE question_id = q.id) as submission_count,
+        (SELECT COUNT(DISTINCT user_id) FROM submissions WHERE question_id = q.id AND (result = 'pass' OR status = 'accepted')) as accepted_count
       FROM questions q WHERE q.id = ?
     `);
     const question = stmt.get(userId, req.params.id);
@@ -117,15 +143,15 @@ router.get('/:id', (req, res) => {
 // 创建题目（管理员）
 router.post('/', authMiddleware, adminMiddleware, (req, res) => {
   try {
-    const { title, type, language, difficulty, content, options, answer, test_cases, scratch_template, points, tags } = req.body;
+    const { title, type, language, difficulty, content, options, answer, test_cases, scratch_template, points, tags, source, time_limit_ms, memory_limit_mb, is_public } = req.body;
     
     if (!title || !type || !content || !answer) {
       return res.status(400).json({ error: '缺少必要字段' });
     }
     
     const stmt = db.prepare(`
-      INSERT INTO questions (title, type, language, difficulty, content, options, answer, test_cases, scratch_template, points, tags, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO questions (title, type, language, difficulty, content, options, answer, test_cases, scratch_template, points, tags, source, time_limit_ms, memory_limit_mb, is_public, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     const result = stmt.run(
@@ -134,12 +160,16 @@ router.post('/', authMiddleware, adminMiddleware, (req, res) => {
       language || null,
       difficulty || 'medium',
       content,
-      options ? JSON.stringify(options) : null,
+      jsonField(options),
       answer,
-      test_cases ? JSON.stringify(test_cases) : null,
-      scratch_template ? JSON.stringify(scratch_template) : null,
+      jsonField(test_cases),
+      jsonField(scratch_template),
       points || 10,
       tags || null,
+      source || '',
+      Number(time_limit_ms) || 1000,
+      Number(memory_limit_mb) || 128,
+      is_public === undefined ? 1 : (is_public ? 1 : 0),
       req.user.id
     );
     
@@ -152,7 +182,7 @@ router.post('/', authMiddleware, adminMiddleware, (req, res) => {
 // 更新题目（管理员）
 router.put('/:id', authMiddleware, adminMiddleware, (req, res) => {
   try {
-    const { title, type, language, difficulty, content, options, answer, test_cases, scratch_template, points, tags } = req.body;
+    const { title, type, language, difficulty, content, options, answer, test_cases, scratch_template, points, tags, source, time_limit_ms, memory_limit_mb, is_public } = req.body;
     
     const stmt = db.prepare(`
       UPDATE questions SET
@@ -167,6 +197,10 @@ router.put('/:id', authMiddleware, adminMiddleware, (req, res) => {
         scratch_template = COALESCE(?, scratch_template),
         points = COALESCE(?, points),
         tags = COALESCE(?, tags),
+        source = COALESCE(?, source),
+        time_limit_ms = COALESCE(?, time_limit_ms),
+        memory_limit_mb = COALESCE(?, memory_limit_mb),
+        is_public = COALESCE(?, is_public),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `);
@@ -177,12 +211,16 @@ router.put('/:id', authMiddleware, adminMiddleware, (req, res) => {
       language,
       difficulty,
       content,
-      options ? JSON.stringify(options) : null,
+      jsonField(options),
       answer,
-      test_cases ? JSON.stringify(test_cases) : null,
-      scratch_template ? JSON.stringify(scratch_template) : null,
+      jsonField(test_cases),
+      jsonField(scratch_template),
       points,
       tags,
+      source,
+      time_limit_ms === undefined ? null : Number(time_limit_ms) || 1000,
+      memory_limit_mb === undefined ? null : Number(memory_limit_mb) || 128,
+      is_public === undefined ? null : (is_public ? 1 : 0),
       req.params.id
     );
     

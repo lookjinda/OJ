@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { User, Award, Target, TrendingUp } from 'lucide-react';
+import { User, Award, Target, TrendingUp, Lock, KeyRound } from 'lucide-react';
 import { submissionApi, authApi } from '../utils/api';
 import { useAuthStore } from '../stores';
 
@@ -25,6 +25,11 @@ export default function Profile() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [loading, setLoading] = useState(true);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordSuccess, setPasswordSuccess] = useState('');
 
   useEffect(() => {
     loadData();
@@ -42,6 +47,34 @@ export default function Profile() {
       console.error('加载数据失败:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordError('');
+    setPasswordSuccess('');
+
+    if (newPassword.length < 6) {
+      setPasswordError('新密码长度至少6个字符');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPasswordError('两次输入的新密码不一致');
+      return;
+    }
+
+    setPasswordLoading(true);
+    try {
+      await authApi.changePassword(newPassword);
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordSuccess('密码已修改');
+    } catch (err: any) {
+      setPasswordError(err.response?.data?.error || '修改密码失败');
+    } finally {
+      setPasswordLoading(false);
     }
   };
 
@@ -74,6 +107,61 @@ export default function Profile() {
             <p className="text-gray-500">ID: {user?.id}</p>
           </div>
         </div>
+      </div>
+
+      {/* 修改密码 */}
+      <div className="bg-white rounded-lg shadow-sm border p-6 mb-6">
+        <div className="flex items-center space-x-2 mb-4">
+          <Lock className="w-5 h-5 text-primary-600" />
+          <h2 className="text-lg font-semibold">修改密码</h2>
+        </div>
+        {passwordError && (
+          <div className="mb-4 p-3 bg-red-50 text-red-600 rounded-md text-sm">
+            {passwordError}
+          </div>
+        )}
+        {passwordSuccess && (
+          <div className="mb-4 p-3 bg-green-50 text-green-700 rounded-md text-sm">
+            {passwordSuccess}
+          </div>
+        )}
+        <form onSubmit={handleChangePassword} className="grid gap-4 md:grid-cols-[1fr_1fr_auto] md:items-end">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">新密码</label>
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                placeholder="请输入新密码"
+                required
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">确认新密码</label>
+            <div className="relative">
+              <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                placeholder="请再次输入新密码"
+                required
+              />
+            </div>
+          </div>
+          <button
+            type="submit"
+            disabled={passwordLoading}
+            className="px-5 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {passwordLoading ? '修改中...' : '保存'}
+          </button>
+        </form>
       </div>
 
       {/* 统计卡片 */}

@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const db = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
-const { judgeSubmission } = require('../services/judge');
 
 // 提交答案
 router.post('/', authMiddleware, async (req, res) => {
@@ -26,6 +25,7 @@ router.post('/', authMiddleware, async (req, res) => {
     // 根据题型验证提交内容
     let codeContent = '';
     let result = 'pending';
+    let status = 'pending';
     let score = 0;
     let feedback = '';
 
@@ -48,12 +48,18 @@ router.post('/', authMiddleware, async (req, res) => {
         }
       }
 
-      // 异步判题
-      const judgeResult = await judgeSubmission(question, { language, code, scratch_project: scratchData });
-      result = judgeResult.result;
-      score = judgeResult.score;
-      feedback = judgeResult.feedback;
       codeContent = code || (scratch_filename || 'Scratch项目');
+      if (question.language === 'scratch' || scratch_project) {
+        status = 'system_error';
+        result = 'error';
+        feedback = 'Scratch 自动评测暂未接入新判题队列，请管理员人工查看项目文件。';
+      } else if (!['python', 'cpp'].includes(language || question.language)) {
+        status = 'system_error';
+        result = 'error';
+        feedback = '暂不支持该语言自动评测';
+      } else {
+        feedback = '提交已进入判题队列';
+      }
     } else if (question.type === 'choice') {
       if (!answer) {
         return res.status(400).json({ error: '请提交答案' });
@@ -74,8 +80,8 @@ router.post('/', authMiddleware, async (req, res) => {
 
     // 保存提交记录
     const stmt = db.prepare(`
-      INSERT INTO submissions (user_id, question_id, language, code, scratch_project, answer, result, score, feedback)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO submissions (user_id, question_id, language, code, scratch_project, answer, result, status, score, feedback)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     const insertResult = stmt.run(
@@ -86,6 +92,7 @@ router.post('/', authMiddleware, async (req, res) => {
       scratch_project ? scratch_project : null,
       answer || null,
       result,
+      status,
       score,
       feedback
     );
@@ -93,12 +100,70 @@ router.post('/', authMiddleware, async (req, res) => {
     res.status(201).json({
       id: insertResult.lastInsertRowid,
       result,
+      status,
       score,
       feedback
     });
   } catch (err) {
     console.error('提交失败:', err);
     res.status(500).json({ error: '提交失败' });
+  }
+});
+
+// 全站公开提交状态
+router.get('/public', (req, res) => {
+  try {
+    const { page = 1, limit = 30, question_id, username } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+    let sql = `
+      SELECT s.id, s.question_id, s.language, s.result, s.status, s.score, s.execution_time,
+        s.memory_usage, s.submitted_at, s.judged_at, q.title as question_title, u.username
+      FROM submissions s
+      JOIN questions q ON s.question_id = q.id
+      JOIN users u ON s.user_id = u.id
+      WHERE 1=1
+    `;
+    const params = [];
+    if (question_id) {
+      sql += ' AND s.question_id = ?';
+      params.push(Number(question_id));
+    }
+    if (username) {
+      sql += ' AND u.username LIKE ?';
+      params.push(`%${username}%`);
+    }
+    sql += ' ORDER BY s.submitted_at DESC LIMIT ? OFFSET ?';
+    params.push(Number(limit), offset);
+    const submissions = db.prepare(sql).all(...params);
+    res.json({ submissions, page: Number(page), limit: Number(limit) });
+  } catch (err) {
+    console.error('获取公开提交失败:', err);
+    res.status(500).json({ error: '获取公开提交失败' });
+  }
+});
+
+// 单条提交详情，提交者和管理员可查看完整用例反馈
+router.get('/:id(\\d+)', authMiddleware, (req, res) => {
+  try {
+    const submission = db.prepare(`
+      SELECT s.*, q.title as question_title, q.points, u.username
+      FROM submissions s
+      JOIN questions q ON s.question_id = q.id
+      JOIN users u ON s.user_id = u.id
+      WHERE s.id = ?
+    `).get(req.params.id);
+    if (!submission) return res.status(404).json({ error: '提交记录不存在' });
+    if (req.user.role !== 'admin' && req.user.role !== 'teacher' && req.user.id !== submission.user_id) {
+      return res.status(403).json({ error: '无权限查看此提交详情' });
+    }
+    if (submission.case_results) {
+      try { submission.case_results = JSON.parse(submission.case_results); } catch { submission.case_results = []; }
+    } else {
+      submission.case_results = [];
+    }
+    res.json(submission);
+  } catch (err) {
+    res.status(500).json({ error: '获取提交详情失败' });
   }
 });
 
@@ -161,7 +226,7 @@ router.get('/stats', authMiddleware, (req, res) => {
 });
 
 // 下载/预览 Scratch 项目文件 (sb3)
-router.get('/:id/scratch-file', authMiddleware, (req, res) => {
+router.get('/:id(\\d+)/scratch-file', authMiddleware, (req, res) => {
   try {
     const submission = db.prepare(`
       SELECT s.*, q.type as question_type, u.username
@@ -241,7 +306,7 @@ router.get('/all', authMiddleware, (req, res) => {
 });
 
 // 管理员手动评分
-router.patch('/:id/grade', authMiddleware, (req, res) => {
+router.patch('/:id(\\d+)/grade', authMiddleware, (req, res) => {
   try {
     if (req.user.role !== 'admin' && req.user.role !== 'teacher') {
       return res.status(403).json({ error: '需要管理员或教师权限' });

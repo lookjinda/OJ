@@ -192,7 +192,7 @@ const ContestDetail: React.FC = () => {
               {contest.questions.map((q, idx) => (
                 <Link
                   key={q.id}
-                  to={`/questions/${q.id}`}
+                  to={`/question/${q.id}`}
                   className="flex items-center justify-between p-4 hover:bg-gray-50 transition"
                 >
                   <div className="flex items-center gap-4">

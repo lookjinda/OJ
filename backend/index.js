@@ -13,6 +13,8 @@ const contestRoutes = require('./routes/contests');
 const groupRoutes = require('./routes/groups');
 const aiRoutes = require('./routes/ai');
 const examRoutes = require('./routes/exams');
+const siteRoutes = require('./routes/site');
+const { startJudgeWorker } = require('./services/judge');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -37,6 +39,7 @@ app.use('/api/contests', contestRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/exams', examRoutes);
 app.use('/api/groups', groupRoutes);
+app.use('/api/site', siteRoutes);
 
 
 // 健康检查
@@ -54,6 +57,7 @@ app.listen(PORT, '0.0.0.0', () => {
   // 自动初始化数据库
   try {
     initDatabase();
+    startJudgeWorker();
     console.log('✅ 数据库初始化完成');
   } catch (err) {
     console.error('❌ 数据库初始化失败:', err.message);

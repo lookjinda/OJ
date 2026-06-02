@@ -4,20 +4,72 @@ const db = require('../models/db');
 const authMiddleware = require('../middleware/auth').authMiddleware;
 const multer = require('multer');
 const mammoth = require('mammoth');
-const pdfParse = require('pdf-parse');
 const fs = require('fs');
 const path = require('path');
 
 // 配置上传
 const upload = multer({ dest: '/tmp/uploads/' });
 
+function getExamLanguage(exam) {
+  const text = `${exam.title || ''} ${exam.description || ''}`.toLowerCase();
+  if (text.includes('c++') || text.includes('cpp')) return 'C++';
+  if (text.includes('python')) return 'Python';
+  if (text.includes('scratch')) return 'Scratch';
+  if (text.includes('图形化')) return '图形化';
+  return '其他';
+}
+
+function getExamContest(exam) {
+  const text = `${exam.title || ''} ${exam.description || ''}`;
+  if (text.includes('数字守艺人')) return '数字守艺人';
+  if (text.includes('GESP')) return 'GESP';
+  if (text.includes('电子学会') || text.includes('青少年软件编程')) return '电子学会';
+  if (text.includes('信息素养大赛')) return '信息素养大赛';
+  return '其他';
+}
+
+function withExamCategories(exam) {
+  return {
+    ...exam,
+    language_category: getExamLanguage(exam),
+    contest_category: getExamContest(exam),
+  };
+}
+
 // 获取考试列表
 router.get('/', (req, res) => {
-  const exams = db.prepare(`
+  const { search = '', language = '', contest = '' } = req.query;
+  const keyword = String(search || '').trim().toLowerCase();
+  const languageFilter = String(language || '').trim();
+  const contestFilter = String(contest || '').trim();
+
+  let exams = db.prepare(`
     SELECT id, title, description, difficulty, duration, total_score, question_count, start_time, end_time, created_at
     FROM exams
     ORDER BY created_at DESC
-  `).all();
+  `).all().map(withExamCategories);
+
+  if (keyword) {
+    exams = exams.filter((exam) => {
+      const haystack = [
+        exam.title,
+        exam.description,
+        exam.difficulty,
+        exam.language_category,
+        exam.contest_category,
+      ].join(' ').toLowerCase();
+      return haystack.includes(keyword);
+    });
+  }
+
+  if (languageFilter && languageFilter !== '全部') {
+    exams = exams.filter((exam) => exam.language_category === languageFilter);
+  }
+
+  if (contestFilter && contestFilter !== '全部') {
+    exams = exams.filter((exam) => exam.contest_category === contestFilter);
+  }
+
   res.json(exams);
 });
 
@@ -63,7 +115,7 @@ router.get('/:id', authMiddleware, (req, res) => {
     options: q.options ? JSON.parse(q.options) : null,
     answer: q.answer || null,
     descImages: (q.desc_images ? JSON.parse(q.desc_images) : []).map(f =>
-      f.startsWith('http') ? f : `http://localhost:3001/media/${f}`
+      f.startsWith('http') ? f : `/media/${f}`
     ),
   }));
 
@@ -151,12 +203,20 @@ router.post('/:id/submit', authMiddleware, (req, res) => {
   }
 
   const now = new Date().toISOString();
-  // 更新最新的那条记录（本次考试的）
-  db.prepare(`
-    UPDATE exam_records SET answers = ?, score = ?, submitted_at = ?, status = 'submitted'
+  const activeRecord = db.prepare(`
+    SELECT id FROM exam_records
     WHERE exam_id = ? AND user_id = ? AND status = 'in_progress'
     ORDER BY id DESC LIMIT 1
-  `).run(JSON.stringify(answers), score, now, id, userId);
+  `).get(id, userId);
+
+  if (!activeRecord) {
+    return res.status(400).json({ error: '没有进行中的考试记录，请重新开始考试' });
+  }
+
+  db.prepare(`
+    UPDATE exam_records SET answers = ?, score = ?, submitted_at = ?, status = 'submitted'
+    WHERE id = ?
+  `).run(JSON.stringify(answers), score, now, activeRecord.id);
 
   const record = db.prepare(
     "SELECT * FROM exam_records WHERE exam_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1"
@@ -323,6 +383,7 @@ router.post('/import', authMiddleware, upload.single('file'), async (req, res) =
       console.log('Extracted text length:', text.length);
       console.log('First 500 chars:', text.substring(0, 500));
     } else if (req.file.originalname.toLowerCase().endsWith('.pdf')) {
+      const pdfParse = require('pdf-parse');
       const dataBuffer = fs.readFileSync(req.file.path);
       const data = await pdfParse(dataBuffer);
       text = data.text;

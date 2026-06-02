@@ -13,7 +13,10 @@ import Contests from './pages/Contests';
 import ContestDetail from './pages/ContestDetail';
 import Exams from './pages/Exams';
 import ExamDetail from './pages/ExamDetail';
+import ExamRecords from './pages/ExamRecords';
 import Admin from './pages/Admin';
+import Groups from './pages/Groups';
+import GroupDetail from './pages/GroupDetail';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
@@ -26,25 +29,21 @@ function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
-        <Route
-          path="/"
-          element={
-            <PrivateRoute>
-              <Layout />
-            </PrivateRoute>
-          }
-        >
+        <Route path="/" element={<Layout />}>
           <Route index element={<Home />} />
           <Route path="question/:id" element={<QuestionDetail />} />
           <Route path="lists" element={<ProblemLists />} />
           <Route path="lists/:id" element={<ProblemListDetail />} />
           <Route path="contests" element={<Contests />} />
           <Route path="contests/:id" element={<ContestDetail />} />
-          <Route path="exams" element={<Exams />} />
-          <Route path="exams/:id" element={<ExamDetail />} />
+          <Route path="groups" element={<Groups />} />
+          <Route path="groups/:id" element={<GroupDetail />} />
           <Route path="leaderboard" element={<Leaderboard />} />
-          <Route path="profile" element={<Profile />} />
-          <Route path="admin" element={<Admin />} />
+          <Route path="exams" element={<Exams />} />
+          <Route path="exams/records" element={<PrivateRoute><ExamRecords /></PrivateRoute>} />
+          <Route path="exams/:id" element={<PrivateRoute><ExamDetail /></PrivateRoute>} />
+          <Route path="profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
+          <Route path="admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
         </Route>
       </Routes>
     </Router>

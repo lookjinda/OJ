@@ -1,267 +1,166 @@
-import { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
-import { Send, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { CheckCircle, Clock, Cpu, Database, Send, XCircle } from 'lucide-react';
 import { questionApi, submissionApi } from '../utils/api';
+import { useAuthStore } from '../stores';
 import CodeEditor from '../components/CodeEditor';
 import ScratchEditor from '../components/ScratchEditor';
 
-// 格式化示例输入：字符串去 \r 换行；对象 key=value 格式；数组紧凑 JSON
-function fmtInput(val: any): string {
-  if (val === null || val === undefined) return '';
-  if (typeof val === 'string') return val.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  if (Array.isArray(val)) return JSON.stringify(val);
-  if (typeof val === 'object') {
-    // 对象按 key = value 每行显示
-    return Object.entries(val)
-      .map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
-      .join('\n');
-  }
-  return String(val);
+function fmt(value: any): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (Array.isArray(value)) return JSON.stringify(value);
+  if (typeof value === 'object') return Object.entries(value).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join('\n');
+  return String(value);
 }
 
-// 格式化示例输出：与 fmtInput 相同逻辑
-function fmtOutput(val: any): string {
-  return fmtInput(val);
+function splitTags(tags?: string | null) {
+  return String(tags || '').split(/[,，]/).map((tag) => tag.trim()).filter(Boolean);
 }
 
-interface Question {
-  id: number;
-  title: string;
-  type: string;
-  language: string | null;
-  difficulty: string;
-  points: number;
-  content: string;
-  test_cases?: any;
-  options?: string[];
-  answer?: string;
-  solved?: number;
-  tags?: string;
-}
+const statusText: Record<string, string> = {
+  pending: '等待评测',
+  judging: '正在评测',
+  accepted: '答案正确',
+  wrong_answer: '答案错误',
+  time_limit_exceeded: '超出时间限制',
+  runtime_error: '运行错误',
+  compile_error: '编译错误',
+  system_error: '系统错误',
+  partial: '部分正确',
+};
 
 export default function QuestionDetail() {
   const { id } = useParams<{ id: string }>();
-  const [question, setQuestion] = useState<Question | null>(null);
+  const navigate = useNavigate();
+  const { isAuthenticated } = useAuthStore();
+  const [question, setQuestion] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [language, setLanguage] = useState<'python' | 'cpp' | 'scratch'>('python');
   const [code, setCode] = useState('');
   const [answer, setAnswer] = useState('');
   const [scratchFile, setScratchFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [submission, setSubmission] = useState<any>(null);
 
   useEffect(() => {
-    loadQuestion();
+    questionApi.getById(Number(id))
+      .then((res) => setQuestion(res.data))
+      .finally(() => setLoading(false));
   }, [id]);
 
   useEffect(() => {
-    if (question?.starter_code) {
-      setCode(question.starter_code);
-    }
-    if (question?.language) {
-      setLanguage(question.language as any);
-    }
+    if (question?.language) setLanguage(question.language);
   }, [question]);
 
-  const loadQuestion = async () => {
-    try {
-      const res = await questionApi.getById(Number(id));
-      setQuestion(res.data);
-    } catch (err) {
-      console.error('加载题目失败:', err);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (!submission?.id || !['pending', 'judging'].includes(submission.status)) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const res = await submissionApi.getById(submission.id);
+        setSubmission(res.data);
+        if (!['pending', 'judging'].includes(res.data.status)) window.clearInterval(timer);
+      } catch {
+        window.clearInterval(timer);
+      }
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [submission?.id, submission?.status]);
+
+  const examples = useMemo(() => {
+    if (!question?.test_cases) return [];
+    return Array.isArray(question.test_cases) ? question.test_cases.slice(0, 3) : [];
+  }, [question]);
+
+  const submit = async () => {
+    if (!isAuthenticated()) {
+      navigate('/login');
+      return;
     }
-  };
-
-  const handleSubmit = async () => {
     setSubmitting(true);
-    setResult(null);
-
+    setSubmission(null);
     try {
       const payload: any = { question_id: Number(id) };
-
-      if (question?.type === 'programming') {
+      if (question.type === 'programming') {
         if (question.language === 'scratch') {
-          if (scratchFile) {
-            const arrayBuffer = await scratchFile.arrayBuffer();
-            const bytes = new Uint8Array(arrayBuffer);
-            let binary = '';
-            for (let i = 0; i < bytes.byteLength; i++) {
-              binary += String.fromCharCode(bytes[i]);
-            }
-            payload.scratch_project = btoa(binary);
-            payload.scratch_filename = scratchFile.name;
-          } else {
-            setResult({ result: 'error', feedback: '请先上传Scratch项目文件(.sb3)' });
-            setSubmitting(false);
+          if (!scratchFile) {
+            setSubmission({ status: 'system_error', feedback: '请先上传 Scratch 项目文件' });
             return;
           }
+          const buffer = await scratchFile.arrayBuffer();
+          const bytes = new Uint8Array(buffer);
+          let binary = '';
+          for (let i = 0; i < bytes.byteLength; i += 1) binary += String.fromCharCode(bytes[i]);
+          payload.scratch_project = btoa(binary);
+          payload.scratch_filename = scratchFile.name;
         } else {
           payload.language = language;
           payload.code = code;
         }
-      } else if (question?.type === 'fill') {
-        payload.answer = answer;
-      } else if (question?.type === 'choice') {
+      } else {
         payload.answer = answer;
       }
-
       const res = await submissionApi.submit(payload);
-      setResult(res.data);
+      setSubmission(res.data);
     } catch (err: any) {
-      console.error('提交失败:', err);
-      setResult({ result: 'error', feedback: err.response?.data?.error || '提交失败' });
+      setSubmission({ status: 'system_error', feedback: err.response?.data?.error || '提交失败' });
     } finally {
       setSubmitting(false);
     }
   };
 
-  const difficultyColors: Record<string, string> = {
-    easy: 'bg-green-100 text-green-800',
-    medium: 'bg-yellow-100 text-yellow-800',
-    hard: 'bg-red-100 text-red-800',
-  };
+  if (loading) return <div className="max-w-7xl mx-auto py-10 text-gray-400">加载中...</div>;
+  if (!question) return <div className="max-w-7xl mx-auto py-10 text-gray-400">题目不存在</div>;
 
-  const difficultyLabels: Record<string, string> = {
-    easy: '简单',
-    medium: '中等',
-    hard: '困难',
-  };
-
-  if (loading) {
-    return <div className="max-w-7xl mx-auto px-4 py-8">加载中...</div>;
-  }
-
-  if (!question) {
-    return <div className="max-w-7xl mx-auto px-4 py-8">题目不存在</div>;
-  }
+  const caseResults = submission?.case_results || [];
+  const passed = submission?.status === 'accepted' || submission?.result === 'pass';
+  const failed = submission && !['pending', 'judging', 'accepted', 'pass'].includes(submission.status || submission.result);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {/* 题目信息 */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">{question.title}</h1>
-        <div className="flex items-center space-x-3">
-          <span className={`px-2 py-1 text-xs rounded ${difficultyColors[question.difficulty]}`}>
-            {difficultyLabels[question.difficulty]}
-          </span>
-          {question.language && (
-            <span className="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded">
-              {question.language.toUpperCase()}
-            </span>
-          )}
-          <span className="text-sm text-gray-600">{question.points}分</span>
-          {question.time_limit && (
-            <span className="text-sm text-gray-500 flex items-center">
-              <Clock className="w-4 h-4 mr-1" />
-              {question.time_limit}秒
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Scratch题全宽，其他左右分栏 */}
-      {question.type === 'programming' && question.language === 'scratch' ? (
-        <div className="space-y-6">
-          {/* 题目描述 */}
-          <div className="bg-white rounded-lg shadow-sm border p-6">
-            <h2 className="text-lg font-semibold mb-4">题目描述</h2>
-            <div className="prose prose-sm max-w-none">
-              <pre className="whitespace-pre-wrap text-gray-700">{question.content}</pre>
-            </div>
-          </div>
-
-          {/* Scratch作答区 */}
-          <div className="bg-white rounded-lg shadow-sm border p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">作答</h2>
-              <span className="px-3 py-1 bg-orange-100 text-orange-700 rounded text-sm font-medium">
-                🐱 Scratch
-              </span>
-            </div>
-            <ScratchEditor scratchFile={scratchFile} onFileSelect={setScratchFile} />
-
-            {/* 提交按钮 */}
-            <div className="mt-6 flex space-x-3">
-              <button
-                onClick={handleSubmit}
-                disabled={submitting}
-                className="flex-1 py-2 px-4 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 flex items-center justify-center space-x-2"
-              >
-                <Send className="w-4 h-4" />
-                <span>{submitting ? '提交中...' : '提交'}</span>
-              </button>
-            </div>
-
-            {/* 结果展示 */}
-            {result && (
-              <div className={`mt-6 p-4 rounded-lg ${
-                result.result === 'accepted' || result.result === 'pass' ? 'bg-green-50 border border-green-200' :
-                result.result === 'wrong' || result.result === 'fail' ? 'bg-red-50 border border-red-200' :
-                'bg-yellow-50 border border-yellow-200'
-              }`}>
-                <div className="flex items-center space-x-2 mb-2">
-                  {result.result === 'accepted' || result.result === 'pass' ? (
-                    <CheckCircle className="w-5 h-5 text-green-600" />
-                  ) : result.result === 'wrong' || result.result === 'fail' ? (
-                    <XCircle className="w-5 h-5 text-red-600" />
-                  ) : (
-                    <Clock className="w-5 h-5 text-yellow-600" />
-                  )}
-                  <span className={`font-semibold ${
-                    result.result === 'accepted' || result.result === 'pass' ? 'text-green-800' :
-                    result.result === 'wrong' || result.result === 'fail' ? 'text-red-800' :
-                    'text-yellow-800'
-                  }`}>
-                    {result.result === 'accepted' || result.result === 'pass' ? '通过！' :
-                     result.result === 'wrong' || result.result === 'fail' ? '答案错误' :
-                     '部分正确'}
-                  </span>
-                  <span className="text-sm text-gray-600">
-                    得分：{result.score}/{question.points}
-                  </span>
-                </div>
-                {result.feedback && (
-                  <p className="text-sm text-gray-700 whitespace-pre-wrap">{result.feedback}</p>
-                )}
+    <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-5">
+      <section className="space-y-4 min-w-0">
+        <div className="bg-white border rounded-lg p-5">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <div className="text-sm text-gray-400 font-mono">P{question.id}</div>
+              <h1 className="text-2xl font-semibold text-gray-900 mt-1">{question.title}</h1>
+              <div className="flex flex-wrap gap-2 mt-3">
+                {splitTags(question.tags).map((tag) => (
+                  <Link key={tag} to={`/?tag=${encodeURIComponent(tag)}`} className="px-2 py-1 bg-slate-100 text-gray-600 rounded text-xs">
+                    {tag}
+                  </Link>
+                ))}
               </div>
-            )}
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-sm text-gray-600 min-w-[220px]">
+              <div className="flex items-center gap-1.5"><Clock className="w-4 h-4 text-sky-600" />{question.time_limit_ms || 1000} ms</div>
+              <div className="flex items-center gap-1.5"><Database className="w-4 h-4 text-sky-600" />{question.memory_limit_mb || 128} MB</div>
+              <div className="flex items-center gap-1.5"><Cpu className="w-4 h-4 text-sky-600" />{question.language?.toUpperCase() || '通用'}</div>
+              <div>{question.accepted_count || 0}/{question.submission_count || 0} 通过</div>
+            </div>
           </div>
         </div>
-      ) : (
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* 左侧：题目描述 */}
-        <div className="bg-white rounded-lg shadow-sm border p-6">
-          <h2 className="text-lg font-semibold mb-4">题目描述</h2>
-          <div className="prose prose-sm max-w-none">
-            <pre className="whitespace-pre-wrap text-gray-700">{question.content}</pre>
-          </div>
 
+        <div className="bg-white border rounded-lg p-5">
+          <h2 className="text-lg font-semibold mb-3">题目描述</h2>
+          <pre className="whitespace-pre-wrap text-sm leading-7 text-gray-700 font-sans">{question.content}</pre>
         </div>
 
-        {/* 示例 */}
-        {question.type === 'programming' && question.test_cases && question.language !== 'scratch' && (
-          <div className="mt-6">
-            <h3 className="text-md font-semibold mb-3">示例</h3>
-            <div className="space-y-3">
-              {question.test_cases.slice(0, 3).map((tc: any, idx: number) => (
-                <div key={idx} className="bg-gray-50 rounded-md border border-gray-200 overflow-hidden">
-                  <div className="bg-blue-50 px-3 py-1 border-b border-gray-200 text-xs font-medium text-blue-700">
-                    样例 {idx + 1}
-                  </div>
-                  <div className="flex divide-x divide-gray-200">
-                    <div className="flex-1 p-3">
-                      <div className="text-xs font-medium text-gray-500 mb-1">输入</div>
-                      <pre className="text-sm text-gray-800 whitespace-pre-wrap font-mono">
-                        {fmtInput(tc.input)}
-                      </pre>
+        {examples.length > 0 && (
+          <div className="bg-white border rounded-lg p-5">
+            <h2 className="text-lg font-semibold mb-3">样例</h2>
+            <div className="space-y-4">
+              {examples.map((tc: any, index: number) => (
+                <div key={index} className="border rounded-md overflow-hidden">
+                  <div className="bg-slate-50 px-3 py-2 text-sm font-medium">样例 {index + 1}</div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x">
+                    <div className="p-3">
+                      <div className="text-xs text-gray-500 mb-2">输入</div>
+                      <pre className="text-sm whitespace-pre-wrap font-mono">{fmt(tc.input)}</pre>
                     </div>
-                    <div className="flex-1 p-3">
-                      <div className="text-xs font-medium text-gray-500 mb-1">输出</div>
-                      <pre className="text-sm text-gray-800 whitespace-pre-wrap font-mono">
-                        {fmtOutput(tc.expected !== undefined ? tc.expected : tc.output)}
-                      </pre>
+                    <div className="p-3">
+                      <div className="text-xs text-gray-500 mb-2">输出</div>
+                      <pre className="text-sm whitespace-pre-wrap font-mono">{fmt(tc.expected !== undefined ? tc.expected : tc.output)}</pre>
                     </div>
                   </div>
                 </div>
@@ -269,135 +168,73 @@ export default function QuestionDetail() {
             </div>
           </div>
         )}
+      </section>
 
-        {/* 右侧：作答区 */}
-        <div className="bg-white rounded-lg shadow-sm border p-6">
-          <h2 className="text-lg font-semibold mb-4">作答</h2>
-
-          {/* 编程题编辑器 */}
-          {question.type === 'programming' && (
-            <div>
-              {/* 语言选择 - Python/C++ */}
-              <div className="mb-4 flex space-x-2">
-                <button
-                  onClick={() => setLanguage('python')}
-                  className={`px-3 py-1 rounded ${
-                    language === 'python'
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  Python
-                </button>
-                <button
-                  onClick={() => setLanguage('cpp')}
-                  className={`px-3 py-1 rounded ${
-                    language === 'cpp'
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  C++
-                </button>
-              </div>
-
-              <CodeEditor
-                language={language}
-                code={code}
-                onChange={setCode}
-              />
-            </div>
-          )}
-
-          {/* 选择题 */}
-          {question.type === 'choice' && question.options && (
+      <aside className="space-y-4">
+        <div className="bg-white border rounded-lg p-5">
+          <h2 className="text-lg font-semibold mb-4">提交</h2>
+          {question.type === 'programming' && question.language !== 'scratch' && (
             <div className="space-y-3">
-              {(question.options || []).map((opt: string, idx: number) => (
-                <label
-                  key={idx}
-                  className={`flex items-center p-3 border rounded-lg cursor-pointer ${
-                    answer === String.fromCharCode(65 + idx)
-                      ? 'border-primary-500 bg-primary-50'
-                      : 'hover:bg-gray-50'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="answer"
-                    value={String.fromCharCode(65 + idx)}
-                    checked={answer === String.fromCharCode(65 + idx)}
-                    onChange={(e) => setAnswer(e.target.value)}
-                    className="mr-3"
-                  />
-                  <span className="font-medium mr-2">{String.fromCharCode(65 + idx)}.</span>
-                  <span>{opt}</span>
-                </label>
-              ))}
-            </div>
-          )}
-
-          {/* 填空题 */}
-          {question.type === 'fill' && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">答案</label>
-              <textarea
-                value={answer}
-                onChange={(e) => setAnswer(e.target.value)}
-                className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-primary-500"
-                rows={5}
-                placeholder="请输入答案..."
-              />
-            </div>
-          )}
-
-          {/* 提交按钮 */}
-          <div className="mt-6 flex space-x-3">
-            <button
-              onClick={handleSubmit}
-              disabled={submitting}
-              className="flex-1 py-2 px-4 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 flex items-center justify-center space-x-2"
-            >
-              <Send className="w-4 h-4" />
-              <span>{submitting ? '提交中...' : '提交'}</span>
-            </button>
-          </div>
-
-          {/* 结果展示 */}
-          {result && (
-            <div className={`mt-6 p-4 rounded-lg ${
-              ['accepted', 'pass'].includes(result.result) ? 'bg-green-50 border border-green-200' :
-              ['wrong', 'fail'].includes(result.result) ? 'bg-red-50 border border-red-200' :
-              'bg-yellow-50 border border-yellow-200'
-            }`}>
-              <div className="flex items-center space-x-2 mb-2">
-                {['accepted', 'pass'].includes(result.result) ? (
-                  <CheckCircle className="w-5 h-5 text-green-600" />
-                ) : ['wrong', 'fail'].includes(result.result) ? (
-                  <XCircle className="w-5 h-5 text-red-600" />
-                ) : (
-                  <Clock className="w-5 h-5 text-yellow-600" />
-                )}
-                <span className={`font-semibold ${
-                  ['accepted', 'pass'].includes(result.result) ? 'text-green-800' :
-                  ['wrong', 'fail'].includes(result.result) ? 'text-red-800' :
-                  'text-yellow-800'
-                }`}>
-                  {['accepted', 'pass'].includes(result.result) ? '通过！' :
-                   ['wrong', 'fail'].includes(result.result) ? '答案错误' :
-                   '运行错误'}
-                </span>
-                <span className="text-sm text-gray-600">
-                  得分：{result.score}/{question.points}
-                </span>
+              <div className="flex gap-2">
+                {(['python', 'cpp'] as const).map((lang) => (
+                  <button key={lang} onClick={() => setLanguage(lang)} className={`px-3 py-1.5 rounded text-sm ${language === lang ? 'bg-sky-600 text-white' : 'bg-slate-100 text-gray-700'}`}>
+                    {lang === 'python' ? 'Python' : 'C++'}
+                  </button>
+                ))}
               </div>
-              {result.feedback && (
-                <p className="text-sm text-gray-700 whitespace-pre-wrap">{result.feedback}</p>
-              )}
+              <CodeEditor language={language} code={code} onChange={setCode} />
             </div>
           )}
+          {question.type === 'programming' && question.language === 'scratch' && (
+            <ScratchEditor scratchFile={scratchFile} onFileSelect={setScratchFile} />
+          )}
+          {question.type === 'choice' && question.options && (
+            <div className="space-y-2">
+              {question.options.map((option: string, index: number) => {
+                const value = String.fromCharCode(65 + index);
+                return (
+                  <label key={value} className="flex gap-2 p-3 border rounded-md cursor-pointer hover:bg-slate-50">
+                    <input type="radio" value={value} checked={answer === value} onChange={(e) => setAnswer(e.target.value)} />
+                    <span>{option}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          {question.type === 'fill' && (
+            <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} rows={5} className="w-full px-3 py-2 border rounded-md text-sm" placeholder="请输入答案" />
+          )}
+          <button onClick={submit} disabled={submitting} className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2 bg-sky-600 text-white rounded-md hover:bg-sky-700 disabled:opacity-50">
+            <Send className="w-4 h-4" />
+            {submitting ? '提交中...' : isAuthenticated() ? '提交答案' : '登录后提交'}
+          </button>
         </div>
-      </div>
-      )}
+
+        {submission && (
+          <div className={`bg-white border rounded-lg p-5 ${passed ? 'border-emerald-200' : failed ? 'border-rose-200' : 'border-amber-200'}`}>
+            <div className="flex items-center gap-2 font-semibold">
+              {passed ? <CheckCircle className="w-5 h-5 text-emerald-600" /> : failed ? <XCircle className="w-5 h-5 text-rose-600" /> : <Clock className="w-5 h-5 text-amber-600" />}
+              {statusText[submission.status] || statusText[submission.result] || submission.feedback}
+            </div>
+            <div className="text-sm text-gray-600 mt-2">得分：{submission.score || 0}/{question.points}</div>
+            {submission.feedback && <p className="text-sm text-gray-700 whitespace-pre-wrap mt-2">{submission.feedback}</p>}
+            {caseResults.length > 0 && (
+              <div className="mt-4 space-y-3">
+                {caseResults.map((item: any) => (
+                  <div key={item.index} className="border rounded-md p-3 text-xs">
+                    <div className="font-medium mb-2">测试点 {item.index}：{statusText[item.status] || item.status}</div>
+                    <div className="grid grid-cols-1 gap-2">
+                      <pre className="bg-slate-50 p-2 rounded overflow-auto">输入：{item.input}</pre>
+                      <pre className="bg-slate-50 p-2 rounded overflow-auto">期望：{item.expected}</pre>
+                      <pre className="bg-slate-50 p-2 rounded overflow-auto">实际：{item.actual || item.error}</pre>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </aside>
     </div>
   );
 }

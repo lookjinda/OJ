@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { questionApi, listApi, contestApi, authApi, submissionApi } from '../utils/api';
-import { Plus, Pencil, Trash2, Users, BookOpen, ListOrdered, Trophy, X, Save, Download, Check, GripVertical, ArrowUp, ArrowDown, FileText, Upload } from 'lucide-react';
+import { questionApi, listApi, contestApi, authApi, submissionApi, siteApi } from '../utils/api';
+import { Plus, Pencil, Trash2, Users, BookOpen, ListOrdered, Trophy, X, Save, Download, Check, GripVertical, ArrowUp, ArrowDown, FileText, Upload, Palette } from 'lucide-react';
 import { useAuthStore } from '../stores';
 
-type Tab = 'questions' | 'lists' | 'contests' | 'exams' | 'users' | 'submissions';
+type Tab = 'questions' | 'lists' | 'contests' | 'exams' | 'users' | 'submissions' | 'announcements' | 'settings';
 
 export default function Admin() {
   const [activeTab, setActiveTab] = useState<Tab>('questions');
@@ -12,6 +12,8 @@ export default function Admin() {
     { key: 'questions', label: '题目管理', icon: <BookOpen className="w-4 h-4" /> },
     { key: 'lists', label: '题单管理', icon: <ListOrdered className="w-4 h-4" /> },
     { key: 'contests', label: '比赛管理', icon: <Trophy className="w-4 h-4" /> },
+    { key: 'announcements', label: '公告管理', icon: <FileText className="w-4 h-4" /> },
+    { key: 'settings', label: '界面设置', icon: <Palette className="w-4 h-4" /> },
     { key: 'exams', label: '考试管理', icon: <FileText className="w-4 h-4" /> },
     { key: 'users', label: '用户管理', icon: <Users className="w-4 h-4" /> },
     { key: 'submissions', label: '提交记录', icon: <Download className="w-4 h-4" /> },
@@ -20,7 +22,7 @@ export default function Admin() {
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
       <h1 className="text-2xl font-bold text-gray-900 mb-6">管理后台</h1>
-      <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg mb-6">
+      <div className="flex flex-wrap gap-1 bg-gray-100 p-1 rounded-lg mb-6">
         {tabs.map((tab) => (
           <button
             key={tab.key}
@@ -39,6 +41,8 @@ export default function Admin() {
       {activeTab === 'questions' && <QuestionsManager />}
       {activeTab === 'lists' && <ListsManager />}
       {activeTab === 'contests' && <ContestsManager />}
+      {activeTab === 'announcements' && <AnnouncementsManager />}
+      {activeTab === 'settings' && <SiteSettingsManager />}
       {activeTab === 'exams' && <ExamsManager />}
       {activeTab === 'users' && <UsersManager />}
       {activeTab === 'submissions' && <SubmissionsTab />}
@@ -74,6 +78,184 @@ function OptionsEditor({ value, onChange }: { value: any; onChange: (v: any) => 
   );
 }
 
+function AnnouncementsManager() {
+  const [items, setItems] = useState<any[]>([]);
+  const [editing, setEditing] = useState<any>(null);
+
+  useEffect(() => { load(); }, []);
+
+  const load = async () => {
+    const res = await siteApi.getAnnouncements();
+    setItems(res.data.announcements || []);
+  };
+
+  const save = async () => {
+    if (!editing?.title?.trim()) return;
+    const payload = {
+      title: editing.title.trim(),
+      content: editing.content || '',
+      priority: Number(editing.priority) || 0,
+      is_active: editing.is_active ? 1 : 0,
+    };
+    if (editing.id) await siteApi.updateAnnouncement(editing.id, payload);
+    else await siteApi.createAnnouncement(payload);
+    setEditing(null);
+    await load();
+  };
+
+  const remove = async (id: number) => {
+    if (!confirm('确定删除该公告？')) return;
+    await siteApi.deleteAnnouncement(id);
+    await load();
+  };
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-4">
+        <span className="text-sm text-gray-500">共 {items.length} 条公告</span>
+        <button onClick={() => setEditing({ title: '', content: '', priority: 0, is_active: 1 })} className="flex items-center gap-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm">
+          <Plus className="w-4 h-4" /> 添加公告
+        </button>
+      </div>
+      <div className="bg-white rounded-lg border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b">
+            <tr>
+              <th className="px-4 py-3 text-left font-medium text-gray-600">标题</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-600">优先级</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-600">状态</th>
+              <th className="px-4 py-3 text-right font-medium text-gray-600">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={item.id} className="border-b hover:bg-gray-50">
+                <td className="px-4 py-3">
+                  <div className="font-medium">{item.title}</div>
+                  <div className="text-xs text-gray-500 line-clamp-1">{item.content}</div>
+                </td>
+                <td className="px-4 py-3">{item.priority}</td>
+                <td className="px-4 py-3">{item.is_active ? '显示' : '隐藏'}</td>
+                <td className="px-4 py-3 text-right">
+                  <button onClick={() => setEditing(item)} className="text-blue-600 hover:text-blue-800 mr-3"><Pencil className="w-4 h-4 inline" /></button>
+                  <button onClick={() => remove(item.id)} className="text-red-600 hover:text-red-800"><Trash2 className="w-4 h-4 inline" /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {editing && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl w-full max-w-xl p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-semibold">{editing.id ? '编辑公告' : '添加公告'}</h2>
+              <button onClick={() => setEditing(null)}><X className="w-5 h-5 text-gray-400 hover:text-gray-600" /></button>
+            </div>
+            <div className="space-y-3">
+              <input value={editing.title || ''} onChange={(e) => setEditing({ ...editing, title: e.target.value })} placeholder="公告标题" className="w-full px-3 py-2 border rounded-lg text-sm" />
+              <textarea value={editing.content || ''} onChange={(e) => setEditing({ ...editing, content: e.target.value })} placeholder="公告内容" rows={5} className="w-full px-3 py-2 border rounded-lg text-sm" />
+              <input type="number" value={editing.priority || 0} onChange={(e) => setEditing({ ...editing, priority: Number(e.target.value) })} placeholder="优先级" className="w-full px-3 py-2 border rounded-lg text-sm" />
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" checked={!!editing.is_active} onChange={(e) => setEditing({ ...editing, is_active: e.target.checked ? 1 : 0 })} />
+                首页显示
+              </label>
+            </div>
+            <div className="flex justify-end gap-3 mt-5">
+              <button onClick={() => setEditing(null)} className="px-4 py-2 border rounded-lg text-sm hover:bg-gray-50">取消</button>
+              <button onClick={save} className="flex items-center gap-1 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm hover:bg-primary-700"><Save className="w-4 h-4" /> 保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SiteSettingsManager() {
+  const [settings, setSettings] = useState<any>({
+    site_name: 'bi lin',
+    site_subtitle: '在线评测与编程训练平台',
+    primary_color: '#0284c7',
+    show_ai_assistant: '1',
+    home_notice_title: '公告',
+    home_stats_title: '站点统计',
+    home_tags_title: '标签',
+  });
+  const [saved, setSaved] = useState('');
+
+  useEffect(() => {
+    siteApi.getSettings().then((res) => {
+      setSettings((current: any) => ({ ...current, ...(res.data.settings || {}) }));
+    });
+  }, []);
+
+  const update = (key: string, value: string) => {
+    setSettings((current: any) => ({ ...current, [key]: value }));
+    setSaved('');
+  };
+
+  const save = async () => {
+    const res = await siteApi.updateSettings(settings);
+    setSettings((current: any) => ({ ...current, ...(res.data.settings || {}) }));
+    setSaved('已保存。刷新前台页面后生效。');
+  };
+
+  return (
+    <div className="bg-white rounded-lg border p-5 max-w-4xl">
+      <div className="mb-5">
+        <h2 className="text-lg font-semibold text-gray-900">界面设置</h2>
+        <p className="text-sm text-gray-500 mt-1">管理前台显示名称、主题色和首页右侧模块文案。</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">站点名称</label>
+          <input value={settings.site_name || ''} onChange={(e) => update('site_name', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">站点副标题</label>
+          <input value={settings.site_subtitle || ''} onChange={(e) => update('site_subtitle', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">主题色</label>
+          <div className="flex gap-2">
+            <input type="color" value={settings.primary_color || '#0284c7'} onChange={(e) => update('primary_color', e.target.value)} className="h-10 w-14 border rounded" />
+            <input value={settings.primary_color || ''} onChange={(e) => update('primary_color', e.target.value)} className="flex-1 px-3 py-2 border rounded-lg text-sm font-mono" />
+          </div>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">AI 助手</label>
+          <select value={settings.show_ai_assistant || '1'} onChange={(e) => update('show_ai_assistant', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm">
+            <option value="1">显示</option>
+            <option value="0">隐藏</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">公告模块标题</label>
+          <input value={settings.home_notice_title || ''} onChange={(e) => update('home_notice_title', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">统计模块标题</label>
+          <input value={settings.home_stats_title || ''} onChange={(e) => update('home_stats_title', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">标签模块标题</label>
+          <input value={settings.home_tags_title || ''} onChange={(e) => update('home_tags_title', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 mt-6">
+        <button onClick={save} className="flex items-center gap-1 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm hover:bg-primary-700">
+          <Save className="w-4 h-4" />
+          保存设置
+        </button>
+        {saved && <span className="text-sm text-green-600">{saved}</span>}
+      </div>
+    </div>
+  );
+}
+
 /* ============ 题目管理 ============ */
 function QuestionsManager() {
   const [questions, setQuestions] = useState<any[]>([]);
@@ -105,7 +287,7 @@ function QuestionsManager() {
   };
 
   const handleCreate = () => {
-    setEditing({ title: '', type: 'programming', language: 'python', difficulty: 'easy', content: '', answer: '', options: '', test_cases: '', points: 10, tags: '' });
+    setEditing({ title: '', type: 'programming', language: 'python', difficulty: 'easy', content: '', answer: '', options: '', test_cases: '', points: 10, tags: '', source: '', time_limit_ms: 1000, memory_limit_mb: 128, is_public: 1 });
     setShowForm(true);
   };
 
@@ -115,12 +297,9 @@ function QuestionsManager() {
       // Parse JSON fields - if already object/array, keep as is; if string, try to parse
       if (data.options) {
         try { data.options = JSON.parse(data.options); } catch { /* already object/array, keep it */ }
-        // OptionsEditor sends object array; API expects JSON string → stringify
-        if (Array.isArray(data.options)) data.options = JSON.stringify(data.options);
       }
       if (data.test_cases) {
         try { data.test_cases = JSON.parse(data.test_cases); } catch { /* already object/array, keep it */ }
-        if (Array.isArray(data.test_cases)) data.test_cases = JSON.stringify(data.test_cases);
       }
 
       if (editing.id) {
@@ -197,6 +376,9 @@ function QuestionForm({ data, onChange, onSave, onClose, isEdit }: any) {
     { key: 'language', label: '语言', type: 'select', options: [{ value: '', label: '无' }, { value: 'python', label: 'Python' }, { value: 'cpp', label: 'C++' }, { value: 'scratch', label: 'Scratch' }] },
     { key: 'difficulty', label: '难度', type: 'select', options: [{ value: 'easy', label: '简单' }, { value: 'medium', label: '中等' }, { value: 'hard', label: '困难' }] },
     { key: 'points', label: '分值', type: 'number' },
+    { key: 'time_limit_ms', label: '时间限制(ms)', type: 'number' },
+    { key: 'memory_limit_mb', label: '内存限制(MB)', type: 'number' },
+    { key: 'source', label: '来源', type: 'text' },
     { key: 'tags', label: '标签(逗号分隔)', type: 'text' },
   ];
 
@@ -225,6 +407,10 @@ function QuestionForm({ data, onChange, onSave, onClose, isEdit }: any) {
           <label className="block text-sm font-medium text-gray-700 mb-1">题目描述</label>
           <textarea value={data.content || ''} onChange={(e) => onChange({ ...data, content: e.target.value })} rows={5} className="w-full px-3 py-2 border rounded-lg text-sm" />
         </div>
+        <label className="mb-4 flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={data.is_public !== 0} onChange={(e) => onChange({ ...data, is_public: e.target.checked ? 1 : 0 })} />
+          公开显示
+        </label>
         <div className="mb-4">
           <label className="block text-sm font-medium text-gray-700 mb-1">答案</label>
           <textarea value={data.answer || ''} onChange={(e) => onChange({ ...data, answer: e.target.value })} rows={3} className="w-full px-3 py-2 border rounded-lg text-sm" />
@@ -676,6 +862,7 @@ function UsersManager() {
             <tr>
               <th className="px-4 py-3 text-left font-medium text-gray-600">ID</th>
               <th className="px-4 py-3 text-left font-medium text-gray-600">用户名</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-600">联系方式</th>
               <th className="px-4 py-3 text-left font-medium text-gray-600">角色</th>
               <th className="px-4 py-3 text-left font-medium text-gray-600">注册时间</th>
               <th className="px-4 py-3 text-left font-medium text-gray-600">最后登录</th>
@@ -687,6 +874,7 @@ function UsersManager() {
               <tr key={u.id} className="border-b hover:bg-gray-50">
                 <td className="px-4 py-3 text-gray-500">{u.id}</td>
                 <td className="px-4 py-3 font-medium">{u.username}</td>
+                <td className="px-4 py-3 text-gray-600">{u.phone || u.email || '-'}</td>
                 <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs ${roleColors[u.role]}`}>{roleLabels[u.role]}</span></td>
                 <td className="px-4 py-3 text-gray-600">{u.created_at || '-'}</td>
                 <td className="px-4 py-3 text-gray-600">{u.last_login || '-'}</td>
@@ -1027,7 +1215,7 @@ function ExamsManager() {
 
   const loadExams = async () => {
     try {
-      const res = await fetch('http://localhost:3001/api/exams', {
+      const res = await fetch('/api/exams', {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       const data = await res.json();
@@ -1043,7 +1231,7 @@ function ExamsManager() {
     setEditingExam({ ...exam });
     setLoadingQuestions(true);
     try {
-      const res = await fetch(`http://localhost:3001/api/exams/${exam.id}`, {
+      const res = await fetch(`/api/exams/${exam.id}`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       const data = await res.json();
@@ -1058,7 +1246,7 @@ function ExamsManager() {
 
   const handleSaveExamInfo = async () => {
     try {
-      const res = await fetch(`http://localhost:3001/api/exams/${editingExam.id}`, {
+      const res = await fetch(`/api/exams/${editingExam.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
         body: JSON.stringify({
@@ -1078,14 +1266,14 @@ function ExamsManager() {
 
   const handleSaveQuestion = async (q: any) => {
     try {
-      const res = await fetch(`http://localhost:3001/api/exams/${editingExam.id}/questions/${q.id}`, {
+      const res = await fetch(`/api/exams/${editingExam.id}/questions/${q.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
         body: JSON.stringify(q)
       });
       if (!res.ok) throw new Error('保存失败');
       // 刷新题目列表
-      const qRes = await fetch(`http://localhost:3001/api/exams/${editingExam.id}`, {
+      const qRes = await fetch(`/api/exams/${editingExam.id}`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       const qData = await qRes.json();
@@ -1099,7 +1287,7 @@ function ExamsManager() {
   const handleDeleteQuestion = async (qid: number) => {
     if (!confirm('确定从考试中移除该题？')) return;
     try {
-      await fetch(`http://localhost:3001/api/exams/${editingExam.id}/questions/${qid}`, {
+      await fetch(`/api/exams/${editingExam.id}/questions/${qid}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
@@ -1114,7 +1302,7 @@ function ExamsManager() {
     try {
       const qData: any = { ...addingQ };
       if (addingQ.options) { qData.options = addingQ.options; }
-      const res = await fetch(`http://localhost:3001/api/exams/${editingExam.id}/questions`, {
+      const res = await fetch(`/api/exams/${editingExam.id}/questions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
         body: JSON.stringify(qData)
@@ -1123,7 +1311,7 @@ function ExamsManager() {
       setShowAddQ(false);
       setAddingQ({ title: '', type: 'choice', content: '', options: '', answer: '', subtype: '' });
       // 刷新
-      const qRes = await fetch(`http://localhost:3001/api/exams/${editingExam.id}`, {
+      const qRes = await fetch(`/api/exams/${editingExam.id}`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       const qData2 = await qRes.json();
@@ -1154,7 +1342,7 @@ function ExamsManager() {
       formData.append('difficulty', 'medium');
       formData.append('duration', '60');
 
-      const res = await fetch('http://localhost:3001/api/exams/import', {
+      const res = await fetch('/api/exams/import', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
         body: formData
@@ -1175,7 +1363,7 @@ function ExamsManager() {
   const handleDelete = async (id: number) => {
     if (!confirm('确定删除该考试？')) return;
     try {
-      await fetch(`http://localhost:3001/api/exams/${id}`, {
+      await fetch(`/api/exams/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
@@ -1366,4 +1554,3 @@ function ExamsManager() {
     </div>
   );
 }
-
