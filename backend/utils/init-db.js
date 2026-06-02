@@ -96,6 +96,13 @@ function initDatabase() {
   ensureColumn('questions', 'memory_limit_mb', 'INTEGER DEFAULT 128');
   ensureColumn('questions', 'is_public', 'INTEGER DEFAULT 1');
 
+  db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_questions_public_id ON questions(is_public, id);
+  CREATE INDEX IF NOT EXISTS idx_questions_type ON questions(type);
+  CREATE INDEX IF NOT EXISTS idx_questions_language ON questions(language);
+  CREATE INDEX IF NOT EXISTS idx_questions_difficulty ON questions(difficulty);
+  `);
+
   // 创建提交记录表
   db.exec(`
   CREATE TABLE IF NOT EXISTS submissions (
@@ -127,6 +134,12 @@ function initDatabase() {
   ensureColumn('submissions', 'runtime_output', 'TEXT');
   ensureColumn('submissions', 'case_results', 'TEXT');
   ensureColumn('submissions', 'judged_at', 'DATETIME');
+
+  db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_submissions_question_id ON submissions(question_id);
+  CREATE INDEX IF NOT EXISTS idx_submissions_user_question ON submissions(user_id, question_id);
+  CREATE INDEX IF NOT EXISTS idx_submissions_question_status ON submissions(question_id, status, result);
+  `);
 
   db.exec(`
   CREATE TABLE IF NOT EXISTS test_data_files (

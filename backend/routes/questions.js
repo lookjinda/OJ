@@ -12,7 +12,9 @@ const jsonField = (value) => {
 router.get('/', (req, res) => {
   try {
     const { type, language, difficulty, search, qid, tag, source, page = 1, limit = 50 } = req.query;
-    const offset = (page - 1) * limit;
+    const pageNumber = Math.max(Number(page) || 1, 1);
+    const limitNumber = Math.min(Math.max(Number(limit) || 50, 1), 100);
+    const offset = (pageNumber - 1) * limitNumber;
     
     // 尝试解析用户token（可选登录）
     let userId = 0;
@@ -22,68 +24,72 @@ router.get('/', (req, res) => {
       if (decoded) userId = decoded.id;
     }
     
-    let sql = `
-      SELECT q.id, q.title, q.type, q.language, q.difficulty, q.points, q.tags, q.source,
-        q.time_limit_ms, q.memory_limit_mb,
-        COUNT(s.id) as submission_count,
-        COUNT(DISTINCT CASE WHEN s.status = 'accepted' OR s.result = 'pass' THEN s.user_id END) as accepted_count,
-        SUM(CASE WHEN s.status = 'accepted' OR s.result = 'pass' THEN 1 ELSE 0 END) as accepted_submissions
-      FROM questions q
-      LEFT JOIN submissions s ON s.question_id = q.id
-      WHERE q.is_public = 1
-    `;
+    const where = ['q.is_public = 1'];
     const params = [];
     
     if (type) {
-      sql += ' AND q.type = ?';
+      where.push('q.type = ?');
       params.push(type);
     }
     if (language) {
-      sql += ' AND q.language = ?';
+      where.push('q.language = ?');
       params.push(language);
     }
     if (difficulty) {
-      sql += ' AND q.difficulty = ?';
+      where.push('q.difficulty = ?');
       params.push(difficulty);
     }
     if (search) {
-      sql += ' AND q.title LIKE ?';
+      where.push('q.title LIKE ?');
       params.push(`%${search}%`);
     }
     if (qid) {
-      sql += ' AND q.id = ?';
+      where.push('q.id = ?');
       params.push(Number(qid));
     }
     if (tag) {
-      sql += ' AND q.tags LIKE ?';
+      where.push('q.tags LIKE ?');
       params.push(`%${tag}%`);
     }
     if (source) {
-      sql += ' AND q.source LIKE ?';
+      where.push('q.source LIKE ?');
       params.push(`%${source}%`);
     }
-    
-    sql += ' GROUP BY q.id ORDER BY q.id ASC LIMIT ? OFFSET ?';
-    params.push(Number(limit), Number(offset));
-    
-    const stmt = db.prepare(sql);
-    const questions = stmt.all(...params);
+
+    const whereSql = where.join(' AND ');
+    const questions = db.prepare(`
+      SELECT q.id, q.title, q.type, q.language, q.difficulty, q.points, q.tags, q.source,
+        q.time_limit_ms, q.memory_limit_mb
+      FROM questions q
+      WHERE ${whereSql}
+      ORDER BY q.id ASC
+      LIMIT ? OFFSET ?
+    `).all(...params, limitNumber, offset);
     
     // 获取总数
-    let countSql = 'SELECT COUNT(*) as total FROM questions q WHERE q.is_public = 1';
-    const countParams = [];
-    if (type) { countSql += ' AND q.type = ?'; countParams.push(type); }
-    if (language) { countSql += ' AND q.language = ?'; countParams.push(language); }
-    if (difficulty) { countSql += ' AND q.difficulty = ?'; countParams.push(difficulty); }
-    if (search) { countSql += ' AND q.title LIKE ?'; countParams.push(`%${search}%`); }
-    if (qid) { countSql += ' AND q.id = ?'; countParams.push(Number(qid)); }
-    if (tag) { countSql += ' AND q.tags LIKE ?'; countParams.push(`%${tag}%`); }
-    if (source) { countSql += ' AND q.source LIKE ?'; countParams.push(`%${source}%`); }
-    const total = db.prepare(countSql).get(...countParams).total;
+    const total = db.prepare(`SELECT COUNT(*) as total FROM questions q WHERE ${whereSql}`).get(...params).total;
+
+    const questionIds = questions.map((q) => q.id);
+    const placeholders = questionIds.map(() => '?').join(',');
+    const statsByQuestion = {};
+    if (questionIds.length > 0) {
+      const stats = db.prepare(`
+        SELECT question_id,
+          COUNT(id) as submission_count,
+          COUNT(DISTINCT CASE WHEN status = 'accepted' OR result = 'pass' THEN user_id END) as accepted_count,
+          SUM(CASE WHEN status = 'accepted' OR result = 'pass' THEN 1 ELSE 0 END) as accepted_submissions
+        FROM submissions
+        WHERE question_id IN (${placeholders})
+        GROUP BY question_id
+      `).all(...questionIds);
+      stats.forEach((item) => {
+        statsByQuestion[item.question_id] = item;
+      });
+    }
     
     // 如果用户已登录，获取每题的提交状态
     let questionStatuses = {};
-    if (userId) {
+    if (userId && questionIds.length > 0) {
       const statuses = db.prepare(`
         SELECT question_id,
           CASE
@@ -92,20 +98,28 @@ router.get('/', (req, res) => {
             ELSE 'none'
           END as status
         FROM submissions
-        WHERE user_id = ?
+        WHERE user_id = ? AND question_id IN (${placeholders})
         GROUP BY question_id
-      `).all(userId);
+      `).all(userId, ...questionIds);
       statuses.forEach(s => { questionStatuses[s.question_id] = s.status; });
     }
     
     // 给每题附加 status
-    const questionsWithStatus = questions.map(q => ({
-      ...q,
-      status: questionStatuses[q.id] || 'none',
-      ac_rate: q.submission_count > 0 ? Math.round((q.accepted_submissions / q.submission_count) * 100) : 0,
-    }));
+    const questionsWithStatus = questions.map(q => {
+      const stats = statsByQuestion[q.id] || {};
+      const submissionCount = stats.submission_count || 0;
+      const acceptedSubmissions = stats.accepted_submissions || 0;
+      return {
+        ...q,
+        submission_count: submissionCount,
+        accepted_count: stats.accepted_count || 0,
+        accepted_submissions: acceptedSubmissions,
+        status: questionStatuses[q.id] || 'none',
+        ac_rate: submissionCount > 0 ? Math.round((acceptedSubmissions / submissionCount) * 100) : 0,
+      };
+    });
     
-    res.json({ questions: questionsWithStatus, total, page: Number(page), limit: Number(limit) });
+    res.json({ questions: questionsWithStatus, total, page: pageNumber, limit: limitNumber });
   } catch (err) {
     console.error('获取题目列表失败:', err);
     res.status(500).json({ error: '获取题目列表失败' });
