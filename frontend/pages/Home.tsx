@@ -79,6 +79,17 @@ export default function Home() {
     setFilters((current) => ({ ...current, tag }));
   };
 
+  const runSearch = () => {
+    const keyword = searchInput.trim();
+    if (/^\d+$/.test(keyword)) {
+      setFilters((current) => ({ ...current, qid: keyword }));
+      setSearch('');
+      return;
+    }
+    setFilters((current) => ({ ...current, qid: '' }));
+    setSearch(keyword);
+  };
+
   return (
     <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-[1fr_300px] gap-5">
       <section className="min-w-0">
@@ -96,8 +107,8 @@ export default function Home() {
                 <input
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') setSearch(searchInput); }}
-                  placeholder="搜索题目"
+                  onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }}
+                  placeholder="搜索题号或题目"
                   className="w-full pl-9 pr-3 py-2 border rounded-md text-sm focus:ring-2 focus:ring-sky-500 focus:outline-none"
                 />
               </div>
@@ -112,7 +123,7 @@ export default function Home() {
                 <option value="hard">提高+</option>
               </select>
               <button
-                onClick={() => setSearch(searchInput)}
+                onClick={runSearch}
                 className="px-4 py-2 bg-sky-600 text-white rounded-md text-sm hover:bg-sky-700"
               >
                 查询
