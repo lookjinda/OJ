@@ -48,16 +48,19 @@ export default function Home() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   useEffect(() => {
-    siteApi.getHomeMeta().then((res) => setMeta(res.data)).catch(() => {});
-  }, []);
-
-  useEffect(() => {
     setPage(1);
   }, [filters, search]);
 
   useEffect(() => {
     loadQuestions();
   }, [filters, search, page]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      siteApi.getHomeMeta().then((res) => setMeta(res.data)).catch(() => {});
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const loadQuestions = async () => {
     setLoading(true);

@@ -18,8 +18,21 @@ function getSettings() {
   }, {});
 }
 
+let homeMetaCache = null;
+let homeMetaCachedAt = 0;
+const HOME_META_CACHE_MS = 5 * 60 * 1000;
+
+function clearHomeMetaCache() {
+  homeMetaCache = null;
+  homeMetaCachedAt = 0;
+}
+
 router.get('/home-meta', (req, res) => {
   try {
+    if (homeMetaCache && Date.now() - homeMetaCachedAt < HOME_META_CACHE_MS) {
+      return res.json(homeMetaCache);
+    }
+
     const announcements = db.prepare(`
       SELECT id, title, content, priority, created_at
       FROM announcements
@@ -28,7 +41,11 @@ router.get('/home-meta', (req, res) => {
       LIMIT 8
     `).all();
 
-    const questions = db.prepare('SELECT id, tags FROM questions WHERE is_public = 1').all();
+    const questions = db.prepare(`
+      SELECT tags
+      FROM questions INDEXED BY idx_questions_public_tags
+      WHERE is_public = 1 AND tags IS NOT NULL AND tags != ''
+    `).all();
     const tagMap = new Map();
     questions.forEach((question) => {
       parseTags(question.tags).forEach((tag) => tagMap.set(tag, (tagMap.get(tag) || 0) + 1));
@@ -54,7 +71,9 @@ router.get('/home-meta', (req, res) => {
       LIMIT 5
     `).all();
 
-    res.json({ announcements, tags, stats, recommended_lists: recommendedLists, settings: getSettings() });
+    homeMetaCache = { announcements, tags, stats, recommended_lists: recommendedLists, settings: getSettings() };
+    homeMetaCachedAt = Date.now();
+    res.json(homeMetaCache);
   } catch (err) {
     console.error('获取首页信息失败:', err);
     res.status(500).json({ error: '获取首页信息失败' });
@@ -88,6 +107,7 @@ router.put('/settings', authMiddleware, adminMiddleware, (req, res) => {
     allowed.forEach((key) => {
       if (req.body[key] !== undefined) upsert.run(key, String(req.body[key]));
     });
+    clearHomeMetaCache();
     res.json({ settings: getSettings(), message: '站点设置已保存' });
   } catch (err) {
     console.error('保存站点设置失败:', err);
@@ -112,6 +132,7 @@ router.post('/announcements', authMiddleware, adminMiddleware, (req, res) => {
     INSERT INTO announcements (title, content, priority, is_active, created_by)
     VALUES (?, ?, ?, ?, ?)
   `).run(String(title).trim(), content, Number(priority) || 0, is_active ? 1 : 0, req.user.id);
+  clearHomeMetaCache();
   res.status(201).json({ id: result.lastInsertRowid, message: '公告已创建' });
 });
 
@@ -134,12 +155,14 @@ router.put('/announcements/:id', authMiddleware, adminMiddleware, (req, res) => 
     req.params.id
   );
   if (result.changes === 0) return res.status(404).json({ error: '公告不存在' });
+  clearHomeMetaCache();
   res.json({ message: '公告已更新' });
 });
 
 router.delete('/announcements/:id', authMiddleware, adminMiddleware, (req, res) => {
   const result = db.prepare('DELETE FROM announcements WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: '公告不存在' });
+  clearHomeMetaCache();
   res.json({ message: '公告已删除' });
 });
 

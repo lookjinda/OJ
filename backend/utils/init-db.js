@@ -101,6 +101,7 @@ function initDatabase() {
   CREATE INDEX IF NOT EXISTS idx_questions_type ON questions(type);
   CREATE INDEX IF NOT EXISTS idx_questions_language ON questions(language);
   CREATE INDEX IF NOT EXISTS idx_questions_difficulty ON questions(difficulty);
+  CREATE INDEX IF NOT EXISTS idx_questions_public_tags ON questions(is_public, tags);
   `);
 
   // 创建提交记录表
