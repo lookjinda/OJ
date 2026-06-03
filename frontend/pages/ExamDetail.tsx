@@ -123,8 +123,49 @@ export default function ExamDetail() {
     return ans;
   };
 
+  const isPracticalOnlyExam = exam && questions.length > 0 && questions.every((q) => {
+    const text = `${exam.title || ''} ${exam.description || ''} ${exam.difficulty || ''} ${q.title || ''} ${q.subtype || ''}`;
+    return q.type === 'programming' && (text.includes('机器人') || text.includes('实操') || text.includes('实际操作'));
+  });
+
   if (loading) return <div className="p-6 text-gray-500">加载中...</div>;
   if (!exam) return <div className="p-6 text-red-500">考试不存在</div>;
+
+  if (isPracticalOnlyExam) {
+    return (
+      <div className="p-4 max-w-4xl mx-auto">
+        <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
+          <h1 className="text-2xl font-bold text-gray-900">{exam.title}</h1>
+          {exam.description && <p className="mt-2 text-sm text-gray-500">{exam.description}</p>}
+          <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-gray-600 md:grid-cols-4">
+            <div>题目数量：{exam.question_count}</div>
+            <div>考试时长：{exam.duration} 分钟</div>
+            <div>总分：{exam.total_score}</div>
+            {exam.difficulty && <div>等级：{exam.difficulty}</div>}
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          {questions.map((q, idx) => (
+            <div key={q.id} className="bg-white border border-gray-200 rounded-xl p-5">
+              <div className="mb-3 flex items-center gap-2">
+                <span className="font-bold text-indigo-600">Q{idx + 1}.</span>
+                <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-700">实操题</span>
+              </div>
+              <h2 className="mb-4 text-lg font-semibold text-gray-900">{q.title}</h2>
+              <div className="whitespace-pre-wrap text-sm leading-7 text-gray-800">{q.content || q.title}</div>
+              {q.answer && (
+                <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4">
+                  <div className="mb-2 text-sm font-semibold text-amber-800">答案解析</div>
+                  <div className="whitespace-pre-wrap text-sm leading-7 text-gray-700">{q.answer}</div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   // 未开始：显示开始按钮
   if (!record) {
