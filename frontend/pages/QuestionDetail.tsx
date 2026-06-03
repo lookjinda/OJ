@@ -18,6 +18,10 @@ function splitTags(tags?: string | null) {
   return String(tags || '').split(/[,，]/).map((tag) => tag.trim()).filter(Boolean);
 }
 
+function html(value: any) {
+  return { __html: String(value || '') };
+}
+
 const statusText: Record<string, string> = {
   pending: '等待评测',
   judging: '正在评测',
@@ -143,7 +147,7 @@ export default function QuestionDetail() {
 
         <div className="bg-white border rounded-lg p-5">
           <h2 className="text-lg font-semibold mb-3">题目描述</h2>
-          <pre className="whitespace-pre-wrap text-sm leading-7 text-gray-700 font-sans">{question.content}</pre>
+          <div className="prose max-w-none text-sm leading-7 text-gray-700" dangerouslySetInnerHTML={html(question.content)} />
         </div>
 
         {examples.length > 0 && (

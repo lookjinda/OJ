@@ -2,6 +2,10 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '../stores';
 
+function html(value: any) {
+  return { __html: String(value || '') };
+}
+
 export default function ExamDetail() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuthStore();
@@ -153,11 +157,11 @@ export default function ExamDetail() {
                 <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-700">实操题</span>
               </div>
               <h2 className="mb-4 text-lg font-semibold text-gray-900">{q.title}</h2>
-              <div className="whitespace-pre-wrap text-sm leading-7 text-gray-800">{q.content || q.title}</div>
+              <div className="prose max-w-none text-sm leading-7 text-gray-800" dangerouslySetInnerHTML={html(q.content || q.title)} />
               {q.answer && (
                 <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4">
                   <div className="mb-2 text-sm font-semibold text-amber-800">答案解析</div>
-                  <div className="whitespace-pre-wrap text-sm leading-7 text-gray-700">{q.answer}</div>
+                  <div className="prose max-w-none text-sm leading-7 text-gray-700" dangerouslySetInnerHTML={html(q.answer)} />
                 </div>
               )}
             </div>
@@ -258,7 +262,7 @@ export default function ExamDetail() {
               </div>
 
               {/* 题目内容 */}
-              <div className="text-gray-800 mb-4 whitespace-pre-wrap">{q.title}</div>
+              <div className="text-gray-800 mb-4 prose max-w-none" dangerouslySetInnerHTML={html(q.content || q.title)} />
 
               {/* 题目描述图片 */}
               {q.descImages && q.descImages.length > 0 && (

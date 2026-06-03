@@ -7,5 +7,6 @@ node_modules/
 *.sqlite.backup*
 *.db
 db_chunks/
+media/lianke/
 dist/
 *.tsbuildinfo
