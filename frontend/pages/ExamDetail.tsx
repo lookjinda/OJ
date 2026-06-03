@@ -127,6 +127,20 @@ export default function ExamDetail() {
     return ans;
   };
 
+  const isAnswered = (q: any) => {
+    const value = submitted ? record?.answers?.[q.id] : answers[q.id];
+    return value !== undefined && value !== null && String(value).length > 0;
+  };
+
+  const scrollToQuestion = (questionId: number) => {
+    document.getElementById(`exam-question-${questionId}`)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
+  };
+
+  const answeredCount = questions.filter(isAnswered).length;
+
   const isPracticalOnlyExam = exam && questions.length > 0 && questions.every((q) => {
     const text = `${exam.title || ''} ${exam.description || ''} ${exam.difficulty || ''} ${q.title || ''} ${q.subtype || ''}`;
     return q.type === 'programming' && (text.includes('机器人') || text.includes('实操') || text.includes('实际操作'));
@@ -193,8 +207,43 @@ export default function ExamDetail() {
     );
   }
 
+  const answerCard = (
+    <aside className="self-start rounded-xl border border-gray-200 bg-white p-4 lg:sticky lg:top-24">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-base font-semibold text-gray-900">答题卡</h2>
+        <span className="text-xs text-gray-500">{answeredCount}/{questions.length}</span>
+      </div>
+      <div className="mb-3 flex items-center gap-3 text-xs text-gray-500">
+        <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-indigo-500" />已做</span>
+        <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-gray-200" />未做</span>
+      </div>
+      <div className="grid grid-cols-5 gap-2 sm:grid-cols-8 lg:grid-cols-5">
+        {questions.map((q, idx) => {
+          const done = isAnswered(q);
+          return (
+            <button
+              key={q.id}
+              type="button"
+              onClick={() => scrollToQuestion(q.id)}
+              className={`h-9 rounded-md border text-sm font-medium transition-colors ${
+                done
+                  ? 'border-indigo-500 bg-indigo-500 text-white hover:bg-indigo-600'
+                  : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-indigo-300 hover:bg-indigo-50'
+              }`}
+              title={`第 ${idx + 1} 题${done ? '，已做' : '，未做'}`}
+            >
+              {idx + 1}
+            </button>
+          );
+        })}
+      </div>
+    </aside>
+  );
+
   return (
-    <div className="p-4 max-w-4xl mx-auto">
+    <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 p-4 lg:grid-cols-[240px_minmax(0,1fr)]">
+      {answerCard}
+      <main className="min-w-0">
       {/* 顶部信息栏 */}
       <div className="sticky top-0 bg-white border-b border-gray-200 z-10 pb-3 mb-4">
         <div className="flex items-center justify-between">
@@ -241,7 +290,7 @@ export default function ExamDetail() {
           const isCorrect = submitted && record?.answers?.[q.id] !== undefined;
 
           return (
-            <div key={q.id} className="bg-white border border-gray-200 rounded-xl p-5">
+            <div id={`exam-question-${q.id}`} key={q.id} className="scroll-mt-28 bg-white border border-gray-200 rounded-xl p-5">
               {/* 题号 + 类型标签 */}
               <div className="flex items-center gap-2 mb-3">
                 <span className="font-bold text-indigo-600">Q{idx + 1}.</span>
@@ -419,6 +468,7 @@ export default function ExamDetail() {
           </button>
         </div>
       )}
+      </main>
     </div>
   );
 }
